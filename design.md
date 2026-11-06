@@ -12,7 +12,7 @@ For now, the server provides a fixed set of global queues (designed to allow cus
 
 Queues are global across the server. Every MCP tool call accepts a caller `identity` string:
 - **Reads (`list_queues`, `get_queue`):** Filter items where `owner == identity` by default, with an option to view items across all owners (or filter by a specific `owner`).
-- **Writes (`upsert_item`):** Default `owner` to the caller's `identity` when inserting a new item if `owner` is not explicitly specified.
+- **Writes (`upsert_item`):** Default `owner` to the caller's `identity` if `owner` is not explicitly specified.
 
 ## Data Model
 
@@ -21,18 +21,19 @@ Queues are global across the server. Every MCP tool call accepts a caller `ident
 - `items` (`[]Item`): Ordered list of items currently in the queue.
 
 ### Item
-- `id` (`string`): Unique server-generated identifier (e.g., UUID/short ID).
-- `title` (`string`): Short summary of the item (required on insert).
-- `status` (`string`): Lifecycle state: `open`, `in_progress`, `blocked`, `done`, `cancelled` (defaults to `open` on insert).
-- `queue` (`string`): Current queue name (defaults to `Inbox` on insert).
+- `id` (`string`): Unique server-generated identifier.
+- `title` (`string`): Short summary of the item (required).
+- `status` (`string`): Lifecycle state: `open`, `in_progress`, `blocked`, `done`, `cancelled` (defaults to `open` when omitted).
+- `queue` (`string`): Current queue name (defaults to `Inbox` when omitted).
   - **Auto-archiving:** Setting `status` to `done` or `cancelled` automatically moves `queue` to `Archive`.
-- `position` (`int`): Explicit 0-indexed position within the item's current queue.
-  - Omitting `position` on insert or queue change appends the item to the end of the target queue.
-  - Specifying `position` inserts/moves the item to that index and shifts subsequent items in that queue.
+- `position` (`int`): Explicit 1-indexed position within the item's current queue (`1` = first item).
+  - Omitting `position` (`0`) on insert or queue change appends the item to the end of the target queue.
+  - Omitting `position` (`0`) when updating an item in the same queue preserves its current position.
+  - Specifying `position >= 1` inserts/moves the item to that 1-based position and shifts subsequent items in that queue.
 - `text` (`string`, optional): Detailed description or body text.
 - `data` (`map[string]any`, optional): Arbitrary structured JSON key-value metadata.
 - `links` (`[]string`, optional): List of URLs, URIs, or item references.
-- `owner` (`string`): Identity string of the item's owner (defaults to caller's `identity` on insert).
+- `owner` (`string`): Identity string of the item's owner (defaults to caller's `identity` when omitted).
 - `updated_at` (`time.Time` / RFC3339 `string`): Timestamp automatically updated on insert and any modification.
 
 ## MCP Tools
@@ -55,18 +56,18 @@ Returns items in a specified queue ordered by `position` ascending.
   - `offset` (`int`, optional): Number of items to skip for pagination.
 
 ### 3. `upsert_item`
-Creates a new item if `id` is omitted, or partially updates (patches) an existing item if `id` is provided.
+Creates a new item if `id` is omitted, or replaces an existing item if `id` is provided.
 - **Inputs:**
   - `identity` (`string`, required)
   - `id` (`string`, optional): Item ID to update. If omitted, inserts a new item.
-  - `title` (`string`, optional on update, required on insert)
-  - `queue` (`string`, optional): Defaults to `Inbox` on insert. Ignored/overridden to `Archive` if `status` is set to `done` or `cancelled`.
-  - `status` (`string`, optional): Defaults to `open` on insert.
-  - `position` (`int`, optional): Target 0-indexed position in the queue.
+  - `title` (`string`, required)
+  - `queue` (`string`, optional): Defaults to `Inbox` when omitted. Overridden to `Archive` if `status` is `done` or `cancelled`.
+  - `status` (`string`, optional): Defaults to `open` when omitted.
+  - `position` (`int`, optional): Target 1-indexed position in the queue (`0` means default/append or keep position).
   - `text` (`string`, optional)
   - `data` (`map[string]any`, optional)
   - `links` (`[]string`, optional)
-  - `owner` (`string`, optional): Defaults to `identity` on insert.
+  - `owner` (`string`, optional): Defaults to `identity` when omitted.
 - **Returns:** The created or updated `Item`.
 
 ## Architecture & Persistence
