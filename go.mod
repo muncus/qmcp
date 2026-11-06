@@ -2,7 +2,10 @@ module github.com/muncus/qmcp
 
 go 1.27.3
 
-require github.com/modelcontextprotocol/go-sdk v1.8.0
+require (
+	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/tmc/a2ui v0.5.0
+)
 
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect

@@ -68,7 +68,9 @@ func New(store queue.Store) *mcp.Server {
 		if err != nil {
 			return nil, ListQueuesOutput{}, err
 		}
-		return nil, ListQueuesOutput{Queues: queues}, nil
+		out := ListQueuesOutput{Queues: queues}
+		msgs := BuildQueuesSummarySurface(in.Identity, queues)
+		return toolResultWithA2UI("a2ui://qmcp/queues", out, msgs)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -87,10 +89,12 @@ func New(store queue.Store) *mcp.Server {
 		if err != nil {
 			return nil, GetQueueOutput{}, err
 		}
-		return nil, GetQueueOutput{
+		out := GetQueueOutput{
 			Queue: in.Queue,
 			Items: items,
-		}, nil
+		}
+		msgs := BuildQueueSurface(in.Identity, in.Queue, items)
+		return toolResultWithA2UI("a2ui://qmcp/queue", out, msgs)
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -111,7 +115,9 @@ func New(store queue.Store) *mcp.Server {
 		if err != nil {
 			return nil, UpsertItemOutput{}, err
 		}
-		return nil, UpsertItemOutput{Item: item}, nil
+		out := UpsertItemOutput{Item: item}
+		msgs := BuildItemSurface(in.Identity, item)
+		return toolResultWithA2UI("a2ui://qmcp/item", out, msgs)
 	})
 
 	return srv
