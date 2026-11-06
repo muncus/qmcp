@@ -23,13 +23,24 @@ type Store interface {
 	UpsertItem(ctx context.Context, identity string, item Item) (Item, error)
 }
 
+// ChangeNotifier is an optional interface implemented by stores that can push
+// notifications when queue/item state changes.
+type ChangeNotifier interface {
+	Subscribe(ctx context.Context) <-chan struct{}
+}
+
 // JSONLStore is an in-memory Store implementation that loads items from a JSONL
 // file at startup and atomically flushes the state to disk on every write.
 type JSONLStore struct {
-	mu       sync.RWMutex
-	filePath string
-	queues   map[QueueName][]Item
-	now      func() time.Time
+	mu          sync.RWMutex
+	filePath    string
+	lastModTime time.Time
+	lastSize    int64
+	queues      map[QueueName][]Item
+	now         func() time.Time
+
+	subMu sync.Mutex
+	subs  map[chan struct{}]struct{}
 }
 
 // NewJSONLStore creates a new JSONLStore backed by filePath.
@@ -40,19 +51,99 @@ func NewJSONLStore(filePath string) (*JSONLStore, error) {
 		filePath: filePath,
 		queues:   make(map[QueueName][]Item, len(StandardQueues)),
 		now:      func() time.Time { return time.Now().UTC() },
+		subs:     make(map[chan struct{}]struct{}),
 	}
 	for _, q := range StandardQueues {
 		s.queues[q] = nil
 	}
 	if filePath != "" {
-		if err := s.load(); err != nil {
+		if err := s.loadLocked(); err != nil {
 			return nil, err
 		}
 	}
 	return s, nil
 }
 
-func (s *JSONLStore) load() error {
+// Subscribe returns a channel that receives a signal whenever items change in
+// the store (including changes detected on the underlying JSONL file).
+func (s *JSONLStore) Subscribe(ctx context.Context) <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.subMu.Lock()
+	s.subs[ch] = struct{}{}
+	s.subMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				s.subMu.Lock()
+				delete(s.subs, ch)
+				close(ch)
+				s.subMu.Unlock()
+				return
+			case <-ticker.C:
+				if s.checkDiskChange() {
+					s.notifySubscribers()
+				}
+			}
+		}
+	}()
+
+	return ch
+}
+
+func (s *JSONLStore) notifySubscribers() {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for ch := range s.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *JSONLStore) checkDiskChange() bool {
+	if s.filePath == "" {
+		return false
+	}
+	info, err := os.Stat(s.filePath)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !info.ModTime().Equal(s.lastModTime) || info.Size() != s.lastSize {
+		_ = s.loadLocked()
+		return true
+	}
+	return false
+}
+
+func (s *JSONLStore) reloadIfChangedLocked() {
+	if s.filePath == "" {
+		return
+	}
+	info, err := os.Stat(s.filePath)
+	if err != nil {
+		return
+	}
+	if !info.ModTime().Equal(s.lastModTime) || info.Size() != s.lastSize {
+		_ = s.loadLocked()
+	}
+}
+
+func (s *JSONLStore) loadLocked() error {
+	info, err := os.Stat(s.filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat store file %q: %w", s.filePath, err)
+	}
+
 	f, err := os.Open(s.filePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -61,6 +152,10 @@ func (s *JSONLStore) load() error {
 		return fmt.Errorf("open store file %q: %w", s.filePath, err)
 	}
 	defer f.Close()
+
+	for _, q := range StandardQueues {
+		s.queues[q] = nil
+	}
 
 	scanner := bufio.NewScanner(f)
 	// Allow up to 16MB per JSONL line.
@@ -114,6 +209,9 @@ func (s *JSONLStore) load() error {
 		}
 		s.queues[q] = list
 	}
+
+	s.lastModTime = info.ModTime()
+	s.lastSize = info.Size()
 	return nil
 }
 
@@ -163,6 +261,10 @@ func (s *JSONLStore) flushLocked() error {
 	if err := os.Rename(tmpName, s.filePath); err != nil {
 		return fmt.Errorf("rename temp store file to %q: %w", s.filePath, err)
 	}
+	if info, err := os.Stat(s.filePath); err == nil {
+		s.lastModTime = info.ModTime()
+		s.lastSize = info.Size()
+	}
 	cleanup = false
 	return nil
 }
@@ -174,8 +276,9 @@ func (s *JSONLStore) ListQueues(_ context.Context, identity string) ([]QueueSumm
 		return nil, errors.New("identity is required")
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	s.reloadIfChangedLocked()
+	defer s.mu.Unlock()
 
 	summaries := make([]QueueSummary, 0, len(StandardQueues))
 	for _, q := range StandardQueues {
@@ -222,8 +325,9 @@ func (s *JSONLStore) GetQueue(_ context.Context, opts GetQueueOptions) ([]Item, 
 		ownerFilter = opts.Identity
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	s.reloadIfChangedLocked()
+	defer s.mu.Unlock()
 
 	list := s.queues[opts.Queue]
 	matched := make([]Item, 0, len(list))
@@ -279,7 +383,7 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 
 	item.UpdatedAt = s.now()
 	stored := item.Clone()
@@ -287,6 +391,7 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 	if stored.ID == "" {
 		id, err := s.generateUniqueIDLocked()
 		if err != nil {
+			s.mu.Unlock()
 			return Item{}, err
 		}
 		stored.ID = id
@@ -294,13 +399,18 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 		stored = s.insertIntoQueueLocked(stored.Queue, stored, stored.Position)
 		if err := s.flushLocked(); err != nil {
 			s.queues[stored.Queue] = prevQueue
+			s.mu.Unlock()
 			return Item{}, err
 		}
-		return stored.Clone(), nil
+		res := stored.Clone()
+		s.mu.Unlock()
+		s.notifySubscribers()
+		return res, nil
 	}
 
 	oldQueue, oldIdx, ok := s.findByIDLocked(stored.ID)
 	if !ok {
+		s.mu.Unlock()
 		return Item{}, fmt.Errorf("item %q not found", stored.ID)
 	}
 	oldPos := oldIdx + 1
@@ -319,9 +429,13 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 	if err := s.flushLocked(); err != nil {
 		s.queues[oldQueue] = prevOldQueue
 		s.queues[stored.Queue] = prevNewQueue
+		s.mu.Unlock()
 		return Item{}, err
 	}
-	return stored.Clone(), nil
+	res := stored.Clone()
+	s.mu.Unlock()
+	s.notifySubscribers()
+	return res, nil
 }
 
 func (s *JSONLStore) findByIDLocked(id string) (QueueName, int, bool) {

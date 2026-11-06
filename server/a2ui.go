@@ -120,12 +120,32 @@ func BuildItemSurface(identity string, item queue.Item) []a2ui.AgentMessage {
 	return surf.Messages()
 }
 
+func upsertContextForItem(identity string, it queue.Item, status queue.Status, targetQueue queue.QueueName) map[string]a2ui.DynamicValue {
+	ctx := map[string]a2ui.DynamicValue{
+		"identity": a2ui.ValueString(identity),
+		"id":       a2ui.ValueString(it.ID),
+		"title":    a2ui.ValueString(it.Title),
+		"status":   a2ui.ValueString(string(status)),
+		"queue":    a2ui.ValueString(string(targetQueue)),
+		"owner":    a2ui.ValueString(it.Owner),
+		"text":     a2ui.ValueString(it.Text),
+	}
+	if len(it.Links) > 0 {
+		links := make([]any, len(it.Links))
+		for i, l := range it.Links {
+			links[i] = l
+		}
+		ctx["links"] = a2ui.ValueArray(links)
+	}
+	return ctx
+}
+
 func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dataPath string, it queue.Item) a2uibuild.Surface {
 	titleID := prefix + "-title"
 	metaID := prefix + "-meta"
 	surf = surf.Add(a2uibuild.Text(titleID, a2ui.StringBinding(dataPath+"/title")))
 	surf = surf.Add(a2uibuild.Text(metaID, a2ui.StringLiteral(
-		fmt.Sprintf("#%d • %s • status: %s • owner: %s", it.Position, it.Queue, it.Status, it.Owner),
+		fmt.Sprintf("#%d • %s • status: %s • owner: %s (id: %s)", it.Position, it.Queue, it.Status, it.Owner, it.ID),
 	)))
 
 	colChildren := []string{titleID, metaID}
@@ -153,36 +173,32 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 	var actionBtnIDs []string
 
-	viewLblID := prefix + "-view-queue-label"
-	viewBtnID := prefix + "-view-queue-btn"
-	surf = surf.Add(a2uibuild.Text(viewLblID, a2ui.StringLiteral("View "+string(it.Queue))))
-	surf = surf.Add(a2uibuild.Button(viewBtnID, a2ui.Action{
-		Event: &a2ui.EventAction{
-			Name: "get_queue",
-			Context: map[string]a2ui.DynamicValue{
-				"identity": a2ui.ValueString(identity),
-				"queue":    a2ui.ValueString(string(it.Queue)),
-			},
-		},
-	}, viewLblID))
-	actionBtnIDs = append(actionBtnIDs, viewBtnID)
-
 	if !queue.IsTerminalStatus(it.Status) {
-		doneLblID := prefix + "-done-label"
-		doneBtnID := prefix + "-done-btn"
-		surf = surf.Add(a2uibuild.Text(doneLblID, a2ui.StringLiteral("Mark Done")))
-		surf = surf.Add(a2uibuild.Button(doneBtnID, a2ui.Action{
-			Event: &a2ui.EventAction{
-				Name: "upsert_item",
-				Context: map[string]a2ui.DynamicValue{
-					"identity": a2ui.ValueString(identity),
-					"id":       a2ui.ValueString(it.ID),
-					"title":    a2ui.ValueString(it.Title),
-					"status":   a2ui.ValueString(string(queue.StatusDone)),
+		if it.Status != queue.StatusInProgress {
+			progLblID := prefix + "-prog-label"
+			progBtnID := prefix + "-prog-btn"
+			surf = surf.Add(a2uibuild.Text(progLblID, a2ui.StringLiteral("In Progress")))
+			surf = surf.Add(a2uibuild.Button(progBtnID, a2ui.Action{
+				Event: &a2ui.EventAction{
+					Name:    "upsert_item",
+					Context: upsertContextForItem(identity, it, queue.StatusInProgress, it.Queue),
 				},
-			},
-		}, doneLblID))
-		actionBtnIDs = append(actionBtnIDs, doneBtnID)
+			}, progLblID))
+			actionBtnIDs = append(actionBtnIDs, progBtnID)
+		}
+
+		if it.Status != queue.StatusBlocked {
+			blkLblID := prefix + "-blk-label"
+			blkBtnID := prefix + "-blk-btn"
+			surf = surf.Add(a2uibuild.Text(blkLblID, a2ui.StringLiteral("Block")))
+			surf = surf.Add(a2uibuild.Button(blkBtnID, a2ui.Action{
+				Event: &a2ui.EventAction{
+					Name:    "upsert_item",
+					Context: upsertContextForItem(identity, it, queue.StatusBlocked, it.Queue),
+				},
+			}, blkLblID))
+			actionBtnIDs = append(actionBtnIDs, blkBtnID)
+		}
 
 		if it.Queue != queue.QueueNeedsAttention {
 			attnLblID := prefix + "-attn-label"
@@ -190,18 +206,34 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 			surf = surf.Add(a2uibuild.Text(attnLblID, a2ui.StringLiteral("Needs Attention")))
 			surf = surf.Add(a2uibuild.Button(attnBtnID, a2ui.Action{
 				Event: &a2ui.EventAction{
-					Name: "upsert_item",
-					Context: map[string]a2ui.DynamicValue{
-						"identity": a2ui.ValueString(identity),
-						"id":       a2ui.ValueString(it.ID),
-						"title":    a2ui.ValueString(it.Title),
-						"queue":    a2ui.ValueString(string(queue.QueueNeedsAttention)),
-						"status":   a2ui.ValueString(string(it.Status)),
-					},
+					Name:    "upsert_item",
+					Context: upsertContextForItem(identity, it, it.Status, queue.QueueNeedsAttention),
 				},
 			}, attnLblID))
 			actionBtnIDs = append(actionBtnIDs, attnBtnID)
 		}
+
+		doneLblID := prefix + "-done-label"
+		doneBtnID := prefix + "-done-btn"
+		surf = surf.Add(a2uibuild.Text(doneLblID, a2ui.StringLiteral("Mark Done")))
+		surf = surf.Add(a2uibuild.Button(doneBtnID, a2ui.Action{
+			Event: &a2ui.EventAction{
+				Name:    "upsert_item",
+				Context: upsertContextForItem(identity, it, queue.StatusDone, queue.QueueArchive),
+			},
+		}, doneLblID))
+		actionBtnIDs = append(actionBtnIDs, doneBtnID)
+	} else {
+		reopenLblID := prefix + "-reopen-label"
+		reopenBtnID := prefix + "-reopen-btn"
+		surf = surf.Add(a2uibuild.Text(reopenLblID, a2ui.StringLiteral("Reopen to Inbox")))
+		surf = surf.Add(a2uibuild.Button(reopenBtnID, a2ui.Action{
+			Event: &a2ui.EventAction{
+				Name:    "upsert_item",
+				Context: upsertContextForItem(identity, it, queue.StatusOpen, queue.QueueInbox),
+			},
+		}, reopenLblID))
+		actionBtnIDs = append(actionBtnIDs, reopenBtnID)
 	}
 
 	actionsRowID := prefix + "-actions"

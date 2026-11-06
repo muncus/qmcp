@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QMCP — Queue Board (A2UI)</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --card: #1e293b;
+    --card-border: #334155;
+    --text: #f8fafc;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent-hover: #0284c7;
+    --success: #22c55e;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --input-bg: #0f172a;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --card: #ffffff;
+      --card-border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --accent: #0284c7;
+      --accent-hover: #0369a1;
+      --input-bg: #f1f5f9;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+  }
+  .app-shell {
+    max-width: 1040px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .toolbar {
+    background: var(--panel);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .toolbar-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .brand {
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .badge {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: rgba(56, 189, 248, 0.15);
+    color: var(--accent);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+  }
+  input, select, textarea {
+    background: var(--input-bg);
+    color: var(--text);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.85rem;
+    font-family: inherit;
+  }
+  button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 0.84rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover {
+    border-color: var(--accent);
+  }
+  button.primary, .a2ui-btn-primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  button.primary:hover, .a2ui-btn-primary:hover {
+    background: var(--accent-hover);
+  }
+  .queue-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .queue-tab.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .drawer {
+    background: var(--panel);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 14px;
+  }
+  .drawer.hidden {
+    display: none;
+  }
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .a2ui-surface-root {
+    min-height: 120px;
+  }
+  .a2ui-column {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .a2ui-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .a2ui-card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 14px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  }
+  .a2ui-divider {
+    border: none;
+    border-top: 1px solid var(--card-border);
+    margin: 4px 0;
+  }
+  .a2ui-text {
+    word-break: break-word;
+  }
+  .a2ui-text[data-id="header"] {
+    font-size: 1.15rem;
+    font-weight: 700;
+  }
+  .a2ui-text[data-id$="-title"], .a2ui-text[data-id$="-name"] {
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  .a2ui-text[data-id$="-meta"], .a2ui-text[data-id$="-counts"], .a2ui-text-caption {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .status-bar {
+    font-size: 0.78rem;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  pre.json-inspector {
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 0.76rem;
+    overflow-x: auto;
+    max-height: 280px;
+    margin: 8px 0 0 0;
+  }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <div class="toolbar">
+    <div class="toolbar-group">
+      <div class="brand">
+        <span>QMCP</span>
+        <span class="badge" id="mode-badge">A2UI v1.0</span>
+      </div>
+      <label style="font-size:0.8rem;color:var(--muted);display:flex;align-items:center;gap:4px;">
+        Identity:
+        <input type="text" id="identity-input" value="muncus" style="width:110px;" />
+      </label>
+      <label style="font-size:0.8rem;color:var(--muted);display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="all-owners-input" checked />
+        All owners
+      </label>
+    </div>
+
+    <div class="queue-tabs" id="nav-tabs">
+      <button type="button" class="queue-tab" data-view="queues">Overview</button>
+      <button type="button" class="queue-tab active" data-view="Inbox">Inbox</button>
+      <button type="button" class="queue-tab" data-view="Outbox">Outbox</button>
+      <button type="button" class="queue-tab" data-view="Needs Attention">Needs Attention</button>
+      <button type="button" class="queue-tab" data-view="Archive">Archive</button>
+    </div>
+
+    <div class="toolbar-group">
+      <button type="button" id="toggle-form-btn" class="primary">+ Upsert Item</button>
+      <button type="button" id="refresh-btn">Refresh</button>
+    </div>
+  </div>
+
+  <form id="upsert-drawer" class="drawer hidden">
+    <div class="form-grid">
+      <label class="form-field">
+        Title (required)
+        <input type="text" id="form-title" required placeholder="Task summary..." />
+      </label>
+      <label class="form-field">
+        Item ID (optional, for replace)
+        <input type="text" id="form-id" placeholder="Leave blank to insert" />
+      </label>
+      <label class="form-field">
+        Queue
+        <select id="form-queue">
+          <option value="Inbox">Inbox</option>
+          <option value="Outbox">Outbox</option>
+          <option value="Needs Attention">Needs Attention</option>
+          <option value="Archive">Archive</option>
+        </select>
+      </label>
+      <label class="form-field">
+        Status
+        <select id="form-status">
+          <option value="open">open</option>
+          <option value="in_progress">in_progress</option>
+          <option value="blocked">blocked</option>
+          <option value="done">done (auto-archives)</option>
+          <option value="cancelled">cancelled (auto-archives)</option>
+        </select>
+      </label>
+      <label class="form-field">
+        Position (1-indexed, 0 = append)
+        <input type="number" id="form-position" min="0" value="0" />
+      </label>
+      <label class="form-field">
+        Owner (defaults to Identity)
+        <input type="text" id="form-owner" placeholder="Optional owner override" />
+      </label>
+    </div>
+    <div class="form-grid">
+      <label class="form-field">
+        Text / Description
+        <textarea id="form-text" rows="2" placeholder="Optional details..."></textarea>
+      </label>
+      <label class="form-field">
+        Links (comma-separated URLs)
+        <input type="text" id="form-links" placeholder="https://example.com/1, https://..." />
+      </label>
+    </div>
+    <div class="toolbar-group" style="justify-content:flex-end;">
+      <button type="button" id="cancel-form-btn">Cancel</button>
+      <button type="submit" class="primary">Save Item</button>
+    </div>
+  </form>
+
+  <main id="a2ui-viewport" class="a2ui-surface-root"></main>
+
+  <div class="status-bar">
+    <span id="status-msg">Ready</span>
+    <button type="button" id="toggle-json-btn" style="font-size:0.75rem;padding:3px 8px;">Inspect A2UI JSON</button>
+  </div>
+  <pre id="json-inspector" class="json-inspector" style="display:none;"></pre>
+</div>
+
+<script>
+(() => {
+  // --- A2UI v1.0 Basic Catalog State & Renderer ---
+  class A2UISurfaceState {
+    constructor(surfaceId) {
+      this.surfaceId = surfaceId;
+      this.catalogId = "";
+      this.components = new Map();
+      this.dataModel = {};
+    }
+
+    applyMessages(messages) {
+      for (const msg of messages) {
+        if (msg.createSurface) {
+          this.surfaceId = msg.createSurface.surfaceId;
+          this.catalogId = msg.createSurface.catalogId || "";
+          this.components.clear();
+          this.dataModel = {};
+          if (Array.isArray(msg.createSurface.components)) {
+            for (const c of msg.createSurface.components) {
+              this.components.set(c.id, c);
+            }
+          }
+        }
+        if (msg.updateComponents && Array.isArray(msg.updateComponents.components)) {
+          for (const c of msg.updateComponents.components) {
+            this.components.set(c.id, c);
+          }
+        }
+        if (msg.updateDataModel) {
+          const path = msg.updateDataModel.path || "";
+          if (!path || path === "/") {
+            this.dataModel = msg.updateDataModel.value || {};
+          } else {
+            this.setByPointer(path, msg.updateDataModel.value);
+          }
+        }
+      }
+    }
+
+    resolvePointer(pointer) {
+      if (!pointer || pointer === "/") return this.dataModel;
+      const parts = pointer.replace(/^\//, "").split("/").map(p => p.replace(/~1/g, "/").replace(/~0/g, "~"));
+      let cur = this.dataModel;
+      for (const part of parts) {
+        if (cur == null || typeof cur !== "object") return undefined;
+        cur = cur[part];
+      }
+      return cur;
+    }
+
+    setByPointer(pointer, val) {
+      const parts = pointer.replace(/^\//, "").split("/");
+      let cur = this.dataModel;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const p = parts[i];
+        if (cur[p] == null || typeof cur[p] !== "object") cur[p] = {};
+        cur = cur[p];
+      }
+      cur[parts[parts.length - 1]] = val;
+    }
+
+    resolveDynamic(dyn) {
+      if (dyn == null) return "";
+      if (typeof dyn === "string" || typeof dyn === "number" || typeof dyn === "boolean") {
+        return dyn;
+      }
+      if (Array.isArray(dyn)) {
+        return dyn;
+      }
+      if (typeof dyn === "object" && typeof dyn.path === "string") {
+        const v = this.resolvePointer(dyn.path);
+        return v == null ? "" : v;
+      }
+      return String(dyn);
+    }
+
+    render(container, onAction) {
+      container.innerHTML = "";
+      const root = this.components.get("root");
+      if (!root) {
+        container.textContent = "Empty A2UI surface (no root component)";
+        return;
+      }
+      container.appendChild(this.renderComponent(root, onAction));
+    }
+
+    renderComponent(comp, onAction) {
+      const type = comp.component;
+      switch (type) {
+        case "Column": {
+          const el = document.createElement("div");
+          el.className = "a2ui-column";
+          for (const childId of this.resolveChildIDs(comp.children)) {
+            const child = this.components.get(childId);
+            if (child) el.appendChild(this.renderComponent(child, onAction));
+          }
+          return el;
+        }
+        case "Row": {
+          const el = document.createElement("div");
+          el.className = "a2ui-row";
+          for (const childId of this.resolveChildIDs(comp.children)) {
+            const child = this.components.get(childId);
+            if (child) el.appendChild(this.renderComponent(child, onAction));
+          }
+          return el;
+        }
+        case "Card": {
+          const el = document.createElement("div");
+          el.className = "a2ui-card";
+          const child = this.components.get(comp.child);
+          if (child) el.appendChild(this.renderComponent(child, onAction));
+          return el;
+        }
+        case "Divider": {
+          const el = document.createElement("hr");
+          el.className = "a2ui-divider";
+          return el;
+        }
+        case "Text": {
+          const el = document.createElement("div");
+          el.className = "a2ui-text" + (comp.variant ? " a2ui-text-" + comp.variant : "");
+          el.dataset.id = comp.id;
+          el.textContent = String(this.resolveDynamic(comp.text));
+          return el;
+        }
+        case "Button": {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "a2ui-btn" + (comp.variant ? " a2ui-btn-" + comp.variant : "");
+          const child = this.components.get(comp.child);
+          if (child) {
+            btn.textContent = String(this.resolveDynamic(child.text));
+          } else {
+            btn.textContent = comp.id;
+          }
+          btn.addEventListener("click", () => onAction(comp.action, this));
+          return btn;
+        }
+        default: {
+          const el = document.createElement("div");
+          el.textContent = `[${type}: ${comp.id}]`;
+          return el;
+        }
+      }
+    }
+
+    resolveChildIDs(children) {
+      if (Array.isArray(children)) return children;
+      return [];
+    }
+  }
+
+  // --- Transport Bridge: MCP Apps (postMessage) + Direct Browser HTTP (/api/tool + /api/events) ---
+  const viewport = document.getElementById("a2ui-viewport");
+  const statusMsg = document.getElementById("status-msg");
+  const jsonInspector = document.getElementById("json-inspector");
+  const identityInput = document.getElementById("identity-input");
+  const allOwnersInput = document.getElementById("all-owners-input");
+  const modeBadge = document.getElementById("mode-badge");
+  const isEmbeddedIframe = window.parent && window.parent !== window;
+
+  let currentView = "Inbox";
+  let mcpBridgeReady = false;
+  let nextRpcId = 1;
+  const pendingRpc = new Map();
+
+  function setStatus(text) {
+    statusMsg.textContent = text;
+  }
+
+  function renderA2UIMessages(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return;
+    jsonInspector.textContent = JSON.stringify(messages, null, 2);
+    const surf = new A2UISurfaceState("qmcp");
+    surf.applyMessages(messages);
+    if (surf.dataModel && typeof surf.dataModel.queue === "string" && surf.dataModel.queue) {
+      setActiveTab(surf.dataModel.queue);
+    }
+    surf.render(viewport, handleA2UIAction);
+  }
+
+  function extractA2UIFromToolResult(result) {
+    if (!result) return null;
+    if (Array.isArray(result.a2ui)) return result.a2ui;
+    if (Array.isArray(result.content)) {
+      for (const item of result.content) {
+        const res = item && item.resource;
+        if (res && res.mimeType === "application/a2ui+json" && typeof res.text === "string") {
+          try {
+            return JSON.parse(res.text);
+          } catch (e) {
+            console.error("Failed to parse A2UI JSON:", e);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  async function handleA2UIAction(action, surfaceState) {
+    if (!action) return;
+    if (action.functionCall && action.functionCall.call === "openUrl") {
+      const urlArg = action.functionCall.args && action.functionCall.args.url;
+      const url = surfaceState.resolveDynamic(urlArg);
+      if (url) {
+        if (mcpBridgeReady) {
+          sendMcpNotification("ui/open-link", { url });
+        }
+        window.open(url, "_blank", "noopener");
+      }
+      return;
+    }
+    if (action.event && action.event.name) {
+      const args = {};
+      if (action.event.context) {
+        for (const [k, v] of Object.entries(action.event.context)) {
+          args[k] = surfaceState.resolveDynamic(v);
+        }
+      }
+      if (action.event.name === "get_queue" && args.queue) {
+        setActiveTab(args.queue);
+        args.all_owners = allOwnersInput.checked;
+      }
+      await invokeTool(action.event.name, args, action.event.name !== "upsert_item");
+      if (action.event.name === "upsert_item") {
+        await refreshCurrentView();
+      }
+    }
+  }
+
+  function sendMcpRequest(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = nextRpcId++;
+      pendingRpc.set(id, { resolve, reject });
+      window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      setTimeout(() => {
+        if (pendingRpc.has(id)) {
+          pendingRpc.delete(id);
+          reject(new Error("MCP host request timed out: " + method));
+        }
+      }, 4000);
+    });
+  }
+
+  function sendMcpNotification(method, params) {
+    window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  }
+
+  window.addEventListener("message", (ev) => {
+    const data = ev.data;
+    if (!data || data.jsonrpc !== "2.0") return;
+    if (data.id != null && pendingRpc.has(data.id)) {
+      const { resolve, reject } = pendingRpc.get(data.id);
+      pendingRpc.delete(data.id);
+      if (data.error) reject(new Error(data.error.message || "RPC error"));
+      else resolve(data.result);
+      return;
+    }
+    if (data.method === "ui/notifications/tool-result" || data.method === "notifications/tool-result") {
+      const a2uiMsgs = extractA2UIFromToolResult(data.params);
+      if (a2uiMsgs) {
+        renderA2UIMessages(a2uiMsgs);
+        setStatus("Rendered tool result from MCP Host");
+      }
+    }
+  });
+
+  async function invokeTool(name, args, renderResult = true) {
+    setStatus(`Calling ${name}...`);
+    try {
+      if (mcpBridgeReady) {
+        const res = await sendMcpRequest("tools/call", { name, arguments: args });
+        if (renderResult) {
+          const msgs = extractA2UIFromToolResult(res);
+          if (msgs) renderA2UIMessages(msgs);
+        }
+        setStatus(`Completed ${name} via MCP Host`);
+        return res;
+      }
+      const resp = await fetch("/api/tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, arguments: args }),
+      });
+      const payload = await resp.json();
+      if (!resp.ok || payload.error) {
+        throw new Error(payload.error || `HTTP ${resp.status}`);
+      }
+      if (renderResult) {
+        const msgs = extractA2UIFromToolResult(payload);
+        if (msgs) renderA2UIMessages(msgs);
+      }
+      setStatus(`Updated (${new Date().toLocaleTimeString()})`);
+      return payload;
+    } catch (err) {
+      setStatus(`Error: ${err.message}`);
+      throw err;
+    }
+  }
+
+  function setActiveTab(view) {
+    currentView = view;
+    for (const btn of document.querySelectorAll(".queue-tab")) {
+      btn.classList.toggle("active", btn.dataset.view === view);
+    }
+  }
+
+  async function refreshCurrentView() {
+    const identity = identityInput.value.trim() || "muncus";
+    if (currentView === "queues") {
+      await invokeTool("list_queues", { identity });
+    } else {
+      await invokeTool("get_queue", {
+        identity,
+        queue: currentView,
+        all_owners: allOwnersInput.checked,
+      });
+    }
+  }
+
+  function connectLiveEvents() {
+    if (typeof EventSource === "undefined") return;
+    const es = new EventSource("/api/events");
+    es.onmessage = () => {
+      refreshCurrentView();
+    };
+  }
+
+  // --- UI Event Listeners ---
+  document.getElementById("nav-tabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".queue-tab");
+    if (!btn) return;
+    setActiveTab(btn.dataset.view);
+    refreshCurrentView();
+  });
+
+  document.getElementById("refresh-btn").addEventListener("click", () => refreshCurrentView());
+  allOwnersInput.addEventListener("change", () => refreshCurrentView());
+  identityInput.addEventListener("change", () => refreshCurrentView());
+
+  const upsertDrawer = document.getElementById("upsert-drawer");
+  document.getElementById("toggle-form-btn").addEventListener("click", () => {
+    upsertDrawer.classList.toggle("hidden");
+  });
+  document.getElementById("cancel-form-btn").addEventListener("click", () => {
+    upsertDrawer.classList.add("hidden");
+  });
+
+  upsertDrawer.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const identity = identityInput.value.trim() || "muncus";
+    const linksRaw = document.getElementById("form-links").value.trim();
+    const links = linksRaw ? linksRaw.split(",").map(s => s.trim()).filter(Boolean) : [];
+    const args = {
+      identity,
+      id: document.getElementById("form-id").value.trim(),
+      title: document.getElementById("form-title").value.trim(),
+      queue: document.getElementById("form-queue").value,
+      status: document.getElementById("form-status").value,
+      position: parseInt(document.getElementById("form-position").value || "0", 10),
+      owner: document.getElementById("form-owner").value.trim(),
+      text: document.getElementById("form-text").value.trim(),
+      links,
+    };
+    await invokeTool("upsert_item", args, false);
+    upsertDrawer.reset();
+    upsertDrawer.classList.add("hidden");
+    await refreshCurrentView();
+  });
+
+  document.getElementById("toggle-json-btn").addEventListener("click", () => {
+    const hidden = jsonInspector.style.display === "none";
+    jsonInspector.style.display = hidden ? "block" : "none";
+  });
+
+  // --- Startup: Try MCP Apps Handshake if in iframe, else Direct Browser HTTP ---
+  async function init() {
+    if (isEmbeddedIframe) {
+      try {
+        await sendMcpRequest("ui/initialize", {
+          protocolVersion: "2025-06-18",
+          appInfo: { name: "qmcp-board", version: "0.1.0" },
+          appCapabilities: {},
+        });
+        mcpBridgeReady = true;
+        modeBadge.textContent = "MCP App • A2UI v1.0";
+        sendMcpNotification("ui/notifications/initialized", {});
+        setStatus("Connected to MCP Host");
+        return;
+      } catch (_) {
+        // Fallback to direct HTTP if iframe is not an MCP Apps host.
+      }
+    }
+    modeBadge.textContent = "Browser • Live A2UI v1.0";
+    connectLiveEvents();
+    await refreshCurrentView();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

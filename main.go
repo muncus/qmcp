@@ -21,9 +21,11 @@ func main() {
 	if defaultStoreFile == "" {
 		defaultStoreFile = "qmcp.jsonl"
 	}
+	defaultHTTPAddr := os.Getenv("QMCP_HTTP_ADDR")
 
 	storeFile := flag.String("store-file", defaultStoreFile, "Path to the JSONL persistence file (or set QMCP_STORE_FILE)")
-	httpAddr := flag.String("http", "", "Optional HTTP listen address (e.g. :8080) to serve Streamable HTTP/SSE instead of stdio")
+	httpAddr := flag.String("http", defaultHTTPAddr, "Optional HTTP listen address (e.g. :8080) to serve the browser UI at / and MCP over HTTP at /mcp")
+	alsoStdio := flag.Bool("stdio", false, "Also run MCP over stdio when -http is enabled")
 	flag.Parse()
 
 	store, err := queue.NewJSONLStore(*storeFile)
@@ -37,12 +39,9 @@ func main() {
 	defer stop()
 
 	if *httpAddr != "" {
-		handler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
-			return srv
-		}, nil)
 		httpServer := &http.Server{
 			Addr:              *httpAddr,
-			Handler:           handler,
+			Handler:           server.NewHTTPHandler(srv, store),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
@@ -51,7 +50,21 @@ func main() {
 			defer cancel()
 			_ = httpServer.Shutdown(shutdownCtx)
 		}()
-		log.Printf("qmcp listening on %s (store: %s)", *httpAddr, *storeFile)
+
+		if *alsoStdio {
+			go func() {
+				log.Printf("qmcp browser UI listening on http://localhost%s (MCP at /mcp, store: %s)", *httpAddr, *storeFile)
+				if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Fatalf("HTTP server failed: %v", err)
+				}
+			}()
+			if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
+				log.Fatalf("Stdio server failed: %v", err)
+			}
+			return
+		}
+
+		log.Printf("qmcp browser UI listening on http://localhost%s (MCP at /mcp, store: %s)", *httpAddr, *storeFile)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("HTTP server failed: %v", err)
 		}

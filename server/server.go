@@ -55,14 +55,25 @@ type UpsertItemOutput struct {
 
 // New creates and configures a new MCP Server backed by store.
 func New(store queue.Store) *mcp.Server {
+	caps := &mcp.ServerCapabilities{
+		Resources: &mcp.ResourceCapabilities{},
+		Tools:     &mcp.ToolCapabilities{},
+	}
+	caps.AddExtension(MCPAppsExtensionID, nil)
+
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "qmcp",
 		Version: "0.1.0",
-	}, nil)
+	}, &mcp.ServerOptions{
+		Capabilities: caps,
+	})
+
+	registerMCPAppResource(srv)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_queues",
 		Description: "List all queues along with total item counts and caller-owned item counts.",
+		Meta:        mcpAppToolMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ListQueuesInput) (*mcp.CallToolResult, ListQueuesOutput, error) {
 		queues, err := store.ListQueues(ctx, in.Identity)
 		if err != nil {
@@ -76,6 +87,7 @@ func New(store queue.Store) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_queue",
 		Description: "Get items in a queue ordered by 1-indexed position ascending. Filters by owner == identity by default unless owner or all_owners is specified.",
+		Meta:        mcpAppToolMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetQueueInput) (*mcp.CallToolResult, GetQueueOutput, error) {
 		items, err := store.GetQueue(ctx, queue.GetQueueOptions{
 			Identity:  in.Identity,
@@ -100,6 +112,7 @@ func New(store queue.Store) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "upsert_item",
 		Description: "Insert a new queue item (if id is omitted) or replace an existing item (if id is provided). Setting status to done or cancelled automatically moves the item to Archive.",
+		Meta:        mcpAppToolMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in UpsertItemInput) (*mcp.CallToolResult, UpsertItemOutput, error) {
 		item, err := store.UpsertItem(ctx, in.Identity, queue.Item{
 			ID:       in.ID,

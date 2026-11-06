@@ -1,10 +1,17 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/muncus/qmcp/queue"
@@ -28,6 +35,19 @@ func decodeStructured[T any](t *testing.T, res *mcp.CallToolResult) T {
 		t.Fatalf("unmarshal StructuredContent into %T: %v", out, err)
 	}
 	return out
+}
+
+func newTestValidator(t *testing.T) *a2uischema.Validator {
+	t.Helper()
+	sm, err := a2uischema.NewSchemaManager([]a2uischema.CatalogConfig{a2uischema.BasicCatalogConfig()}, false)
+	if err != nil {
+		t.Fatalf("NewSchemaManager failed: %v", err)
+	}
+	cat, err := sm.SelectedCatalog(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("SelectedCatalog failed: %v", err)
+	}
+	return a2uischema.NewValidator(cat)
 }
 
 func assertValidA2UIResource(t *testing.T, validator *a2uischema.Validator, res *mcp.CallToolResult, wantSurfaceID string) *a2uistate.Surface {
@@ -73,15 +93,7 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 		t.Fatalf("NewJSONLStore failed: %v", err)
 	}
 
-	sm, err := a2uischema.NewSchemaManager([]a2uischema.CatalogConfig{a2uischema.BasicCatalogConfig()}, false)
-	if err != nil {
-		t.Fatalf("NewSchemaManager failed: %v", err)
-	}
-	cat, err := sm.SelectedCatalog(nil, nil, nil)
-	if err != nil {
-		t.Fatalf("SelectedCatalog failed: %v", err)
-	}
-	validator := a2uischema.NewValidator(cat)
+	validator := newTestValidator(t)
 
 	srv := New(store)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
@@ -99,13 +111,35 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	}
 	defer cliSession.Close()
 
-	// 1. Verify tools are registered.
+	// 1. Verify tools are registered and carry _meta.ui.resourceUri.
 	toolsRes, err := cliSession.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
 	}
 	if len(toolsRes.Tools) != 3 {
 		t.Fatalf("expected 3 tools, got %d", len(toolsRes.Tools))
+	}
+	for _, tool := range toolsRes.Tools {
+		uiMeta, ok := tool.Meta["ui"].(map[string]any)
+		if !ok || uiMeta["resourceUri"] != MCPAppResourceURI {
+			t.Errorf("tool %q missing expected _meta.ui.resourceUri=%q: %+v", tool.Name, MCPAppResourceURI, tool.Meta)
+		}
+	}
+
+	// 1b. Verify MCP App resource (ui://qmcp/board) is registered and readable.
+	resList, err := cliSession.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListResources failed: %v", err)
+	}
+	if len(resList.Resources) != 1 || resList.Resources[0].URI != MCPAppResourceURI || resList.Resources[0].MIMEType != MCPAppMIMEType {
+		t.Fatalf("unexpected resources list: %+v", resList.Resources)
+	}
+	readRes, err := cliSession.ReadResource(ctx, &mcp.ReadResourceParams{URI: MCPAppResourceURI})
+	if err != nil {
+		t.Fatalf("ReadResource(%q) failed: %v", MCPAppResourceURI, err)
+	}
+	if len(readRes.Contents) != 1 || !strings.Contains(readRes.Contents[0].Text, "A2UISurfaceState") {
+		t.Fatalf("unexpected MCP App HTML contents")
 	}
 
 	// 2. Insert an item via upsert_item.
@@ -198,4 +232,95 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 		t.Fatalf("CallTool get_queue (empty) failed: %v", err)
 	}
 	assertValidA2UIResource(t, validator, emptyRes, SurfaceQueueID)
+}
+
+func TestHTTPBrowserAndToolAPI(t *testing.T) {
+	store, err := queue.NewJSONLStore("")
+	if err != nil {
+		t.Fatalf("NewJSONLStore failed: %v", err)
+	}
+	validator := newTestValidator(t)
+	srv := New(store)
+	ts := httptest.NewServer(NewHTTPHandler(srv, store))
+	defer ts.Close()
+
+	// 1. Direct browser view GET /
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK on GET /, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "QMCP") || !strings.Contains(string(body), "A2UISurfaceState") {
+		t.Errorf("unexpected HTML served at /")
+	}
+
+	// 2. POST /api/tool upsert_item
+	reqBody, _ := json.Marshal(map[string]any{
+		"name": "upsert_item",
+		"arguments": map[string]any{
+			"identity": "alice",
+			"title":    "Browser created task",
+		},
+	})
+	apiResp, err := http.Post(ts.URL+"/api/tool", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /api/tool failed: %v", err)
+	}
+	defer apiResp.Body.Close()
+	if apiResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK on POST /api/tool, got %d", apiResp.StatusCode)
+	}
+	var toolResp apiToolResponse
+	if err := json.NewDecoder(apiResp.Body).Decode(&toolResp); err != nil {
+		t.Fatalf("decode apiToolResponse failed: %v", err)
+	}
+	if toolResp.Error != "" {
+		t.Fatalf("unexpected API error: %s", toolResp.Error)
+	}
+	if err := validator.ValidateMessages(toolResp.A2UI); err != nil {
+		t.Fatalf("browser API returned invalid A2UI messages: %v", err)
+	}
+
+	// 3. Connect to SSE /api/events and verify live notification on item change.
+	sseCtx, sseCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer sseCancel()
+	sseReq, _ := http.NewRequestWithContext(sseCtx, http.MethodGet, ts.URL+"/api/events", nil)
+	sseResp, err := http.DefaultClient.Do(sseReq)
+	if err != nil {
+		t.Fatalf("GET /api/events failed: %v", err)
+	}
+	defer sseResp.Body.Close()
+
+	lineCh := make(chan string, 4)
+	go func() {
+		sc := bufio.NewScanner(sseResp.Body)
+		for sc.Scan() {
+			text := sc.Text()
+			if strings.HasPrefix(text, "data:") {
+				lineCh <- text
+				return
+			}
+		}
+	}()
+
+	_, err = store.UpsertItem(context.Background(), "alice", queue.Item{
+		Title:  "Trigger SSE",
+		Status: queue.StatusInProgress,
+	})
+	if err != nil {
+		t.Fatalf("store.UpsertItem failed: %v", err)
+	}
+
+	select {
+	case line := <-lineCh:
+		if !strings.Contains(line, `"change"`) {
+			t.Errorf("unexpected SSE data line: %q", line)
+		}
+	case <-sseCtx.Done():
+		t.Fatalf("timed out waiting for SSE change event")
+	}
 }
