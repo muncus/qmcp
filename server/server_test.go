@@ -142,13 +142,14 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 		t.Fatalf("unexpected MCP App HTML contents")
 	}
 
-	// 2. Insert an item via upsert_item.
+	// 2. Insert an item via upsert_item with >= 200 chars of Markdown text to verify truncation vs Modal detail view.
+	longText := strings.Repeat("Check **concurrency** edge cases and locks. ", 6) + "TAIL_MARKER_BEYOND_200_CHARS"
 	upsertRes, err := cliSession.CallTool(ctx, &mcp.CallToolParams{
 		Name: "upsert_item",
 		Arguments: map[string]any{
 			"identity": "agent-1",
 			"title":    "Review PR #42",
-			"text":     "Check concurrency edge cases",
+			"text":     longText,
 			"data":     map[string]any{"pr": 42},
 			"links":    []string{"https://github.com/example/repo/pull/42"},
 		},
@@ -191,6 +192,15 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	}
 	if itemCard, ok := boardSurf.Component("lane-0-item-0-card"); !ok || itemCard.Metadata == nil || itemCard.Metadata.Extensions["qmcp_draggable"] == nil {
 		t.Errorf("expected lane-0-item-0-card with qmcp_draggable metadata extension, got %+v", itemCard)
+	}
+	if cardText, ok := boardSurf.Component("lane-0-item-0-text"); !ok || cardText.Metadata == nil || strings.Contains(cardText.Metadata.Extensions["qmcp_html"].(string), "TAIL_MARKER_BEYOND_200_CHARS") {
+		t.Errorf("expected truncated server-rendered HTML on board card, got %+v", cardText)
+	}
+	if modalComp, ok := boardSurf.Component("lane-0-item-0-detail-modal"); !ok || modalComp.Modal == nil || modalComp.Modal.Content != "lane-0-item-0-modal-content" {
+		t.Errorf("expected A2UI Modal component on card, got %+v", modalComp)
+	}
+	if modalText, ok := boardSurf.Component("lane-0-item-0-modal-text"); !ok || modalText.Metadata == nil || !strings.Contains(modalText.Metadata.Extensions["qmcp_html"].(string), "TAIL_MARKER_BEYOND_200_CHARS") {
+		t.Errorf("expected full untruncated server-rendered HTML inside Modal, got %+v", modalText)
 	}
 
 	// 4. Call get_queue for Inbox and verify A2UI surface.

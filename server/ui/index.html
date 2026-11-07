@@ -239,6 +239,92 @@
     font-size: 0.78rem;
     color: var(--muted);
   }
+  .a2ui-markdown {
+    font-size: 0.88rem;
+    line-height: 1.5;
+  }
+  .a2ui-draggable-card .a2ui-markdown {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .a2ui-modal-dialog {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 18px;
+    width: min(680px, 92vw);
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.45);
+    cursor: default;
+  }
+  .a2ui-modal-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(2px);
+  }
+  .a2ui-modal-header {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 6px;
+  }
+  .a2ui-modal-dialog .a2ui-markdown {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+  }
+  .a2ui-modal-dialog .a2ui-text[data-id$="-modal-title"] {
+    font-size: 1.15rem;
+    font-weight: 700;
+  }
+  .a2ui-markdown p {
+    margin: 0 0 6px 0;
+  }
+  .a2ui-markdown p:last-child {
+    margin-bottom: 0;
+  }
+  .a2ui-markdown h1, .a2ui-markdown h2, .a2ui-markdown h3, .a2ui-markdown h4 {
+    margin: 6px 0 4px 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+  .a2ui-markdown ul, .a2ui-markdown ol {
+    margin: 4px 0 6px 18px;
+    padding: 0;
+  }
+  .a2ui-markdown code {
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 4px;
+    padding: 1px 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8rem;
+  }
+  .a2ui-markdown pre {
+    background: var(--input-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 8px;
+    overflow-x: auto;
+    margin: 6px 0;
+  }
+  .a2ui-markdown pre code {
+    border: none;
+    padding: 0;
+    background: transparent;
+  }
+  .a2ui-markdown blockquote {
+    margin: 4px 0;
+    padding-left: 8px;
+    border-left: 3px solid var(--accent);
+    color: var(--muted);
+  }
+  .a2ui-markdown a {
+    color: var(--accent);
+    text-decoration: underline;
+  }
   .status-bar {
     font-size: 0.78rem;
     color: var(--muted);
@@ -487,7 +573,13 @@
           el = document.createElement("div");
           el.className = "a2ui-text" + (comp.variant ? " a2ui-text-" + comp.variant : "");
           el.dataset.id = comp.id;
-          el.textContent = String(this.resolveDynamic(comp.text));
+          const serverHTML = comp.metadata && comp.metadata.extensions && comp.metadata.extensions.qmcp_html;
+          if (typeof serverHTML === "string" && serverHTML) {
+            el.classList.add("a2ui-markdown");
+            el.innerHTML = serverHTML;
+          } else {
+            el.textContent = String(this.resolveDynamic(comp.text));
+          }
           break;
         }
         case "Button": {
@@ -504,6 +596,47 @@
             e.stopPropagation();
             handlers.onAction(comp.action, this);
           });
+          break;
+        }
+        case "Modal": {
+          el = document.createElement("div");
+          el.className = "a2ui-modal-wrapper";
+          el.dataset.id = comp.id;
+          const triggerComp = this.components.get(comp.trigger);
+          const contentComp = this.components.get(comp.content);
+          const dialog = document.createElement("dialog");
+          dialog.className = "a2ui-modal-dialog";
+          const dialogHeader = document.createElement("div");
+          dialogHeader.className = "a2ui-modal-header";
+          const closeBtn = document.createElement("button");
+          closeBtn.type = "button";
+          closeBtn.className = "a2ui-modal-close";
+          closeBtn.textContent = "Close ✕";
+          closeBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            dialog.close();
+          });
+          dialogHeader.appendChild(closeBtn);
+          dialog.appendChild(dialogHeader);
+          if (contentComp) {
+            dialog.appendChild(this.renderComponent(contentComp, handlers));
+          }
+          dialog.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (e.target === dialog) {
+              dialog.close();
+            }
+          });
+          if (triggerComp) {
+            const triggerEl = this.renderComponent(triggerComp, {
+              ...handlers,
+              onAction: () => {
+                dialog.showModal();
+              },
+            });
+            el.appendChild(triggerEl);
+          }
+          el.appendChild(dialog);
           break;
         }
         default: {
@@ -536,6 +669,10 @@
       el.draggable = true;
 
       el.addEventListener("dragstart", (e) => {
+        if (e.target.closest("dialog") || el.querySelector("dialog[open]")) {
+          e.preventDefault();
+          return;
+        }
         e.stopPropagation();
         el.classList.add("dragging");
         e.dataTransfer.effectAllowed = "move";
@@ -581,6 +718,15 @@
           handlers.onDropItem(sourceItem, dragMeta.queue, Math.max(1, targetPos));
         } catch (err) {
           console.error("Drop on card failed:", err);
+        }
+      });
+
+      el.addEventListener("click", (e) => {
+        if (e.target.closest("button, a, dialog")) return;
+        const dialog = el.querySelector("dialog.a2ui-modal-dialog");
+        if (dialog && !dialog.open) {
+          e.stopPropagation();
+          dialog.showModal();
         }
       });
     }
@@ -722,7 +868,10 @@
           args[k] = surfaceState.resolveDynamic(v);
         }
       }
-      if (action.event.name === "get_queue" && args.queue) {
+      if (action.event.name === "list_queues") {
+        setActiveTab("queues");
+        args.all_owners = allOwnersInput.checked;
+      } else if (action.event.name === "get_queue" && args.queue) {
         setActiveTab(args.queue);
         args.all_owners = allOwnersInput.checked;
       }

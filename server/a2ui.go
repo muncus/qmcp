@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -10,7 +11,26 @@ import (
 	"github.com/tmc/a2ui/a2a"
 	"github.com/tmc/a2ui/a2uibuild"
 	"github.com/tmc/a2ui/a2uistate"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
+
+var mdRenderer = goldmark.New(goldmark.WithExtensions(extension.GFM))
+
+func renderMarkdownHTML(md string) string {
+	var buf bytes.Buffer
+	if err := mdRenderer.Convert([]byte(md), &buf); err != nil {
+		return md
+	}
+	return buf.String()
+}
+
+func truncateCardText(s string) string {
+	if len(s) >= 200 {
+		return s[:200] + "…"
+	}
+	return s
+}
 
 const (
 	SurfaceQueuesID = "qmcp-queues"
@@ -215,6 +235,7 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 	titleID := prefix + "-title"
 	metaID := prefix + "-meta"
 	surf = surf.Add(a2uibuild.Text(titleID, a2ui.StringBinding(dataPath+"/title")))
+
 	metaComp := a2uibuild.Text(metaID, a2ui.StringLiteral(
 		fmt.Sprintf("#%d • %s • status: %s • owner: %s", it.Position, it.Queue, it.Status, it.Owner),
 	))
@@ -225,7 +246,14 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 	if it.Text != "" {
 		textID := prefix + "-text"
-		surf = surf.Add(a2uibuild.Text(textID, a2ui.StringBinding(dataPath+"/text")))
+		preview := truncateCardText(it.Text)
+		textComp := a2uibuild.Text(textID, a2ui.StringBinding(dataPath+"/text_preview"))
+		textComp.Metadata = &a2ui.Metadata{
+			Extensions: map[string]any{
+				"qmcp_html": renderMarkdownHTML(preview),
+			},
+		}
+		surf = surf.Add(textComp)
 		colChildren = append(colChildren, textID)
 	}
 
@@ -244,7 +272,78 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		colChildren = append(colChildren, linksRowID)
 	}
 
-	var actionBtnIDs []string
+	// Build single-card detail Modal (trigger = "Details" button, content = full item detail Column).
+	modalTitleID := prefix + "-modal-title"
+	modalMetaID := prefix + "-modal-meta"
+	modalDivID := prefix + "-modal-divider"
+	surf = surf.Add(a2uibuild.Text(modalTitleID, a2ui.StringBinding(dataPath+"/title")))
+	modalMetaComp := a2uibuild.Text(modalMetaID, a2ui.StringLiteral(
+		fmt.Sprintf("ID: %s • #%d in %s • status: %s • owner: %s • updated: %s",
+			it.ID, it.Position, it.Queue, it.Status, it.Owner, it.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")),
+	))
+	modalMetaComp.Text.Variant = a2ui.TextVariantCaption
+	surf = surf.Add(modalMetaComp)
+	surf = surf.Add(a2uibuild.Divider(modalDivID))
+
+	modalChildren := []string{modalTitleID, modalMetaID, modalDivID}
+	if it.Text != "" {
+		modalTextID := prefix + "-modal-text"
+		modalTextComp := a2uibuild.Text(modalTextID, a2ui.StringBinding(dataPath+"/text"))
+		modalTextComp.Metadata = &a2ui.Metadata{
+			Extensions: map[string]any{
+				"qmcp_html": renderMarkdownHTML(it.Text),
+			},
+		}
+		surf = surf.Add(modalTextComp)
+		modalChildren = append(modalChildren, modalTextID)
+	}
+	if len(it.Data) > 0 {
+		if rawData, err := json.MarshalIndent(it.Data, "", "  "); err == nil {
+			modalDataID := prefix + "-modal-data"
+			mdBlock := "```json\n" + string(rawData) + "\n```"
+			modalDataComp := a2uibuild.Text(modalDataID, a2ui.StringLiteral(string(rawData)))
+			modalDataComp.Metadata = &a2ui.Metadata{
+				Extensions: map[string]any{
+					"qmcp_html": renderMarkdownHTML(mdBlock),
+				},
+			}
+			surf = surf.Add(modalDataComp)
+			modalChildren = append(modalChildren, modalDataID)
+		}
+	}
+	if len(it.Links) > 0 {
+		modalLinkBtnIDs := make([]string, 0, len(it.Links))
+		for li, link := range it.Links {
+			lp := fmt.Sprintf("%s-modal-link-%d", prefix, li)
+			lblID := lp + "-label"
+			btnID := lp + "-btn"
+			surf = surf.Add(a2uibuild.Text(lblID, a2ui.StringLiteral(link)))
+			surf = surf.Add(a2uibuild.Button(btnID, a2ui.OpenURL(a2ui.StringLiteral(link)), lblID))
+			modalLinkBtnIDs = append(modalLinkBtnIDs, btnID)
+		}
+		modalLinksRowID := prefix + "-modal-links"
+		surf = surf.Add(a2uibuild.Row(modalLinksRowID, a2uibuild.Children(modalLinkBtnIDs...)))
+		modalChildren = append(modalChildren, modalLinksRowID)
+	}
+
+	modalContentID := prefix + "-modal-content"
+	surf = surf.Add(a2uibuild.Column(modalContentID, a2uibuild.Children(modalChildren...)))
+
+	detailLblID := prefix + "-detail-label"
+	detailBtnID := prefix + "-detail-btn"
+	modalID := prefix + "-detail-modal"
+	surf = surf.Add(a2uibuild.Text(detailLblID, a2ui.StringLiteral("Details")))
+	surf = surf.Add(a2uibuild.Button(detailBtnID, a2ui.Action{
+		Event: &a2ui.EventAction{
+			Name: "open_item_modal",
+			Context: map[string]a2ui.DynamicValue{
+				"id": a2ui.ValueString(it.ID),
+			},
+		},
+	}, detailLblID))
+	surf = surf.Add(a2uibuild.Modal(modalID, modalContentID, detailBtnID))
+
+	actionBtnIDs := []string{modalID}
 
 	if !queue.IsTerminalStatus(it.Status) {
 		if it.Status != queue.StatusInProgress {
@@ -349,6 +448,7 @@ func itemToDataMap(it queue.Item) map[string]any {
 	}
 	if it.Text != "" {
 		m["text"] = it.Text
+		m["text_preview"] = truncateCardText(it.Text)
 	}
 	if len(it.Data) > 0 {
 		m["data"] = it.Data

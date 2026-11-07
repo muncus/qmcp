@@ -22,21 +22,39 @@ func main() {
 		defaultStoreFile = "qmcp.jsonl"
 	}
 	defaultHTTPAddr := os.Getenv("QMCP_HTTP_ADDR")
+	defaultFirestoreProject := os.Getenv("QMCP_FIRESTORE_PROJECT")
+	defaultFirestoreCollection := os.Getenv("QMCP_FIRESTORE_COLLECTION")
+	if defaultFirestoreCollection == "" {
+		defaultFirestoreCollection = queue.DefaultFirestoreCollection
+	}
 
 	storeFile := flag.String("store-file", defaultStoreFile, "Path to the JSONL persistence file (or set QMCP_STORE_FILE)")
+	firestoreProject := flag.String("firestore-project", defaultFirestoreProject, "Google Cloud project ID for Firestore store (or set QMCP_FIRESTORE_PROJECT)")
+	firestoreCollection := flag.String("firestore-collection", defaultFirestoreCollection, "Firestore collection name (or set QMCP_FIRESTORE_COLLECTION)")
 	httpAddr := flag.String("http", defaultHTTPAddr, "Optional HTTP listen address (e.g. :8080) to serve the browser UI at / and MCP over HTTP at /mcp")
 	alsoStdio := flag.Bool("stdio", false, "Also run MCP over stdio when -http is enabled")
 	flag.Parse()
 
-	store, err := queue.NewJSONLStore(*storeFile)
-	if err != nil {
-		log.Fatalf("Failed to initialize store: %v", err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var store queue.Store
+	if *firestoreProject != "" {
+		fsStore, err := queue.NewFirestoreStore(ctx, *firestoreProject, *firestoreCollection)
+		if err != nil {
+			log.Fatalf("Failed to initialize Firestore store: %v", err)
+		}
+		defer fsStore.Close()
+		store = fsStore
+	} else {
+		jsonlStore, err := queue.NewJSONLStore(*storeFile)
+		if err != nil {
+			log.Fatalf("Failed to initialize JSONL store: %v", err)
+		}
+		store = jsonlStore
 	}
 
 	srv := server.New(store)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	if *httpAddr != "" {
 		httpServer := &http.Server{
