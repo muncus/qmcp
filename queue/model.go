@@ -66,6 +66,13 @@ func IsTerminalStatus(s Status) bool {
 	return s == StatusDone || s == StatusCancelled
 }
 
+// Comment represents a single entry in an Item's comment thread.
+type Comment struct {
+	Author    string    `json:"author" jsonschema:"Identity string of the comment author"`
+	Text      string    `json:"text" jsonschema:"Markdown or plain text content of the comment"`
+	CreatedAt time.Time `json:"created_at" jsonschema:"RFC3339 timestamp when the comment was created"`
+}
+
 // Item represents a single task/message in a queue.
 type Item struct {
 	ID        string         `json:"id" jsonschema:"Unique identifier of the item"`
@@ -74,6 +81,7 @@ type Item struct {
 	Queue     QueueName      `json:"queue" jsonschema:"Queue name (Inbox, Outbox, Needs Attention, Archive)"`
 	Position  int            `json:"position" jsonschema:"1-indexed position within the queue"`
 	Text      string         `json:"text,omitempty" jsonschema:"Detailed description or body text"`
+	Comments  []Comment      `json:"comments,omitempty" jsonschema:"Ordered thread of comments on the item"`
 	Data      map[string]any `json:"data,omitempty" jsonschema:"Arbitrary structured key-value metadata"`
 	Links     []string       `json:"links,omitempty" jsonschema:"List of URLs, URIs, or item references"`
 	Owner     string         `json:"owner" jsonschema:"Identity string of the item owner"`
@@ -83,6 +91,7 @@ type Item struct {
 // Clone returns a deep copy of the Item so callers cannot mutate store state.
 func (it Item) Clone() Item {
 	out := it
+	out.Comments = slices.Clone(it.Comments)
 	out.Data = maps.Clone(it.Data)
 	out.Links = slices.Clone(it.Links)
 	return out

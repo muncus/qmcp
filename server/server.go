@@ -44,6 +44,7 @@ type UpsertItemInput struct {
 	Status   queue.Status    `json:"status,omitempty" jsonschema:"Lifecycle status (open, in_progress, blocked, done, cancelled). Defaults to open when omitted. Setting done or cancelled automatically moves the item to Archive."`
 	Position int             `json:"position,omitempty" jsonschema:"1-indexed position in the target queue. Omit (0) to append on insert/move or keep current position on update."`
 	Text     string          `json:"text,omitempty" jsonschema:"Detailed description or body text"`
+	Comments []queue.Comment `json:"comments,omitempty" jsonschema:"Optional thread of comments on the item"`
 	Data     map[string]any  `json:"data,omitempty" jsonschema:"Arbitrary structured key-value metadata"`
 	Links    []string        `json:"links,omitempty" jsonschema:"List of URLs, URIs, or item references"`
 	Owner    string          `json:"owner,omitempty" jsonschema:"Owner identity string (defaults to caller identity when omitted)"`
@@ -52,6 +53,18 @@ type UpsertItemInput struct {
 // UpsertItemOutput defines the structured output for the upsert_item tool.
 type UpsertItemOutput struct {
 	Item queue.Item `json:"item" jsonschema:"The created or updated item"`
+}
+
+// AddCommentInput defines the input arguments for the add_comment tool.
+type AddCommentInput struct {
+	Identity string `json:"identity" jsonschema:"Identity string of the caller (used as comment author)"`
+	ID       string `json:"id" jsonschema:"ID of the item to append a comment to"`
+	Text     string `json:"text" jsonschema:"Markdown or plain text comment content"`
+}
+
+// AddCommentOutput defines the structured output for the add_comment tool.
+type AddCommentOutput struct {
+	Item queue.Item `json:"item" jsonschema:"The updated item with the appended comment"`
 }
 
 // New creates and configures a new MCP Server backed by store.
@@ -126,6 +139,7 @@ func New(store queue.Store) *mcp.Server {
 			Status:   in.Status,
 			Position: in.Position,
 			Text:     in.Text,
+			Comments: in.Comments,
 			Data:     in.Data,
 			Links:    in.Links,
 			Owner:    in.Owner,
@@ -134,6 +148,20 @@ func New(store queue.Store) *mcp.Server {
 			return nil, UpsertItemOutput{}, err
 		}
 		out := UpsertItemOutput{Item: item}
+		msgs := BuildItemSurface(in.Identity, item)
+		return toolResultWithA2UI("a2ui://qmcp/item", out, msgs)
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "add_comment",
+		Description: "Append a comment to an existing queue item's comment thread.",
+		Meta:        mcpAppToolMeta(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in AddCommentInput) (*mcp.CallToolResult, AddCommentOutput, error) {
+		item, err := store.AddComment(ctx, in.Identity, in.ID, in.Text)
+		if err != nil {
+			return nil, AddCommentOutput{}, err
+		}
+		out := AddCommentOutput{Item: item}
 		msgs := BuildItemSurface(in.Identity, item)
 		return toolResultWithA2UI("a2ui://qmcp/item", out, msgs)
 	})

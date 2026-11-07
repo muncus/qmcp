@@ -32,6 +32,14 @@ func truncateCardText(s string) string {
 	return s
 }
 
+func cardSummaryText(it queue.Item) string {
+	if len(it.Comments) > 0 {
+		last := it.Comments[len(it.Comments)-1]
+		return fmt.Sprintf("**%s:** %s", last.Author, last.Text)
+	}
+	return it.Text
+}
+
 const (
 	SurfaceQueuesID = "qmcp-queues"
 	SurfaceQueueID  = "qmcp-queue"
@@ -236,17 +244,19 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 	metaID := prefix + "-meta"
 	surf = surf.Add(a2uibuild.Text(titleID, a2ui.StringBinding(dataPath+"/title")))
 
-	metaComp := a2uibuild.Text(metaID, a2ui.StringLiteral(
-		fmt.Sprintf("#%d • %s • status: %s • owner: %s", it.Position, it.Queue, it.Status, it.Owner),
-	))
+	metaStr := fmt.Sprintf("#%d • %s • status: %s • owner: %s", it.Position, it.Queue, it.Status, it.Owner)
+	if len(it.Comments) > 0 {
+		metaStr += fmt.Sprintf(" • 💬 %d", len(it.Comments))
+	}
+	metaComp := a2uibuild.Text(metaID, a2ui.StringLiteral(metaStr))
 	metaComp.Text.Variant = a2ui.TextVariantCaption
 	surf = surf.Add(metaComp)
 
 	colChildren := []string{titleID, metaID}
 
-	if it.Text != "" {
+	if summary := cardSummaryText(it); summary != "" {
 		textID := prefix + "-text"
-		preview := truncateCardText(it.Text)
+		preview := truncateCardText(summary)
 		textComp := a2uibuild.Text(textID, a2ui.StringBinding(dataPath+"/text_preview"))
 		textComp.Metadata = &a2ui.Metadata{
 			Extensions: map[string]any{
@@ -272,7 +282,7 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		colChildren = append(colChildren, linksRowID)
 	}
 
-	// Build single-card detail Modal (trigger = "Details" button, content = full item detail Column).
+	// Build single-card detail Modal (trigger = "Details" button, content = full item detail + comment thread Column).
 	modalTitleID := prefix + "-modal-title"
 	modalMetaID := prefix + "-modal-meta"
 	modalDivID := prefix + "-modal-divider"
@@ -326,6 +336,63 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		modalChildren = append(modalChildren, modalLinksRowID)
 	}
 
+	// Comment thread section inside the Modal
+	commentsDivID := prefix + "-comments-divider"
+	commentsHdrID := prefix + "-comments-header"
+	surf = surf.Add(a2uibuild.Divider(commentsDivID))
+	surf = surf.Add(a2uibuild.Text(commentsHdrID, a2ui.StringLiteral(fmt.Sprintf("Comments (%d)", len(it.Comments)))))
+	modalChildren = append(modalChildren, commentsDivID, commentsHdrID)
+
+	for ci, c := range it.Comments {
+		cp := fmt.Sprintf("%s-comment-%d", prefix, ci)
+		cMetaID := cp + "-meta"
+		cTextID := cp + "-text"
+		cColID := cp + "-col"
+		cCardID := cp + "-card"
+
+		cMetaComp := a2uibuild.Text(cMetaID, a2ui.StringLiteral(
+			fmt.Sprintf("%s • %s", c.Author, c.CreatedAt.Format("2006-01-02T15:04:05Z07:00")),
+		))
+		cMetaComp.Text.Variant = a2ui.TextVariantCaption
+		surf = surf.Add(cMetaComp)
+
+		cTextComp := a2uibuild.Text(cTextID, a2ui.StringLiteral(c.Text))
+		cTextComp.Metadata = &a2ui.Metadata{
+			Extensions: map[string]any{
+				"qmcp_html": renderMarkdownHTML(c.Text),
+			},
+		}
+		surf = surf.Add(cTextComp)
+		surf = surf.Add(a2uibuild.Column(cColID, a2uibuild.Children(cMetaID, cTextID)))
+		surf = surf.Add(a2uibuild.Card(cCardID, cColID))
+		modalChildren = append(modalChildren, cCardID)
+	}
+
+	commentInputID := prefix + "-comment-input"
+	commentField := a2uibuild.TextField(commentInputID, a2ui.StringLiteral("Add a comment"))
+	commentField.TextField.Value = new(a2ui.StringBinding(dataPath + "/draft_comment"))
+	commentField.TextField.Placeholder = new(a2ui.StringLiteral("Write a comment (Markdown supported)..."))
+	commentField.TextField.Variant = a2ui.TextFieldVariantLongText
+	surf = surf.Add(commentField)
+
+	postCommentLblID := prefix + "-comment-post-label"
+	postCommentBtnID := prefix + "-comment-post-btn"
+	surf = surf.Add(a2uibuild.Text(postCommentLblID, a2ui.StringLiteral("Post Comment")))
+	postCommentBtn := a2uibuild.Button(postCommentBtnID, a2ui.Action{
+		Event: &a2ui.EventAction{
+			Name: "add_comment",
+			Context: map[string]a2ui.DynamicValue{
+				"identity": a2ui.ValueString(identity),
+				"id":       a2ui.ValueString(it.ID),
+				"text":     a2ui.ValueBinding(dataPath + "/draft_comment"),
+			},
+		},
+	}, postCommentLblID)
+	postCommentBtn.Button.Variant = a2ui.ButtonVariantPrimary
+	surf = surf.Add(postCommentBtn)
+
+	modalChildren = append(modalChildren, commentInputID, postCommentBtnID)
+
 	modalContentID := prefix + "-modal-content"
 	surf = surf.Add(a2uibuild.Column(modalContentID, a2uibuild.Children(modalChildren...)))
 
@@ -341,7 +408,13 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 			},
 		},
 	}, detailLblID))
-	surf = surf.Add(a2uibuild.Modal(modalID, modalContentID, detailBtnID))
+	modalComp := a2uibuild.Modal(modalID, modalContentID, detailBtnID)
+	modalComp.Metadata = &a2ui.Metadata{
+		Extensions: map[string]any{
+			"qmcp_item_id": it.ID,
+		},
+	}
+	surf = surf.Add(modalComp)
 
 	actionBtnIDs := []string{modalID}
 
@@ -438,17 +511,23 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 func itemToDataMap(it queue.Item) map[string]any {
 	m := map[string]any{
-		"id":         it.ID,
-		"title":      it.Title,
-		"status":     string(it.Status),
-		"queue":      string(it.Queue),
-		"position":   it.Position,
-		"owner":      it.Owner,
-		"updated_at": it.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		"id":            it.ID,
+		"title":         it.Title,
+		"status":        string(it.Status),
+		"queue":         string(it.Queue),
+		"position":      it.Position,
+		"owner":         it.Owner,
+		"updated_at":    it.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		"draft_comment": "",
 	}
 	if it.Text != "" {
 		m["text"] = it.Text
-		m["text_preview"] = truncateCardText(it.Text)
+	}
+	if summary := cardSummaryText(it); summary != "" {
+		m["text_preview"] = truncateCardText(summary)
+	}
+	if len(it.Comments) > 0 {
+		m["comments"] = it.Comments
 	}
 	if len(it.Data) > 0 {
 		m["data"] = it.Data

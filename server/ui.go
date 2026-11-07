@@ -196,6 +196,7 @@ func handleAPITool(w http.ResponseWriter, r *http.Request, store queue.Store) {
 			Status:   in.Status,
 			Position: in.Position,
 			Text:     in.Text,
+			Comments: in.Comments,
 			Data:     in.Data,
 			Links:    in.Links,
 			Owner:    in.Owner,
@@ -205,6 +206,24 @@ func handleAPITool(w http.ResponseWriter, r *http.Request, store queue.Store) {
 			return
 		}
 		out := UpsertItemOutput{Item: item}
+		msgs := BuildItemSurface(in.Identity, item)
+		_ = json.NewEncoder(w).Encode(apiToolResponse{
+			StructuredContent: out,
+			A2UI:              msgs,
+		})
+
+	case "add_comment":
+		var in AddCommentInput
+		if err := json.Unmarshal(req.Arguments, &in); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		item, err := store.AddComment(ctx, in.Identity, in.ID, in.Text)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		out := AddCommentOutput{Item: item}
 		msgs := BuildItemSurface(in.Identity, item)
 		_ = json.NewEncoder(w).Encode(apiToolResponse{
 			StructuredContent: out,

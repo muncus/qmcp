@@ -20,20 +20,38 @@ import (
 
 const DefaultFirestoreCollection = "qmcp_items"
 
+type firestoreCommentDoc struct {
+	Author    string    `firestore:"author"`
+	Text      string    `firestore:"text"`
+	CreatedAt time.Time `firestore:"created_at"`
+}
+
 type firestoreItemDoc struct {
-	ID        string         `firestore:"id"`
-	Title     string         `firestore:"title"`
-	Status    string         `firestore:"status"`
-	Queue     string         `firestore:"queue"`
-	Position  int            `firestore:"position"`
-	Text      string         `firestore:"text,omitempty"`
-	Data      map[string]any `firestore:"data,omitempty"`
-	Links     []string       `firestore:"links,omitempty"`
-	Owner     string         `firestore:"owner"`
-	UpdatedAt time.Time      `firestore:"updated_at"`
+	ID        string                `firestore:"id"`
+	Title     string                `firestore:"title"`
+	Status    string                `firestore:"status"`
+	Queue     string                `firestore:"queue"`
+	Position  int                   `firestore:"position"`
+	Text      string                `firestore:"text,omitempty"`
+	Comments  []firestoreCommentDoc `firestore:"comments,omitempty"`
+	Data      map[string]any        `firestore:"data,omitempty"`
+	Links     []string              `firestore:"links,omitempty"`
+	Owner     string                `firestore:"owner"`
+	UpdatedAt time.Time             `firestore:"updated_at"`
 }
 
 func toFirestoreDoc(it Item) firestoreItemDoc {
+	var comments []firestoreCommentDoc
+	if len(it.Comments) > 0 {
+		comments = make([]firestoreCommentDoc, len(it.Comments))
+		for i, c := range it.Comments {
+			comments[i] = firestoreCommentDoc{
+				Author:    c.Author,
+				Text:      c.Text,
+				CreatedAt: c.CreatedAt,
+			}
+		}
+	}
 	return firestoreItemDoc{
 		ID:        it.ID,
 		Title:     it.Title,
@@ -41,6 +59,7 @@ func toFirestoreDoc(it Item) firestoreItemDoc {
 		Queue:     string(it.Queue),
 		Position:  it.Position,
 		Text:      it.Text,
+		Comments:  comments,
 		Data:      maps.Clone(it.Data),
 		Links:     slices.Clone(it.Links),
 		Owner:     it.Owner,
@@ -57,6 +76,17 @@ func (d firestoreItemDoc) toItem() Item {
 	if st == "" {
 		st = StatusOpen
 	}
+	var comments []Comment
+	if len(d.Comments) > 0 {
+		comments = make([]Comment, len(d.Comments))
+		for i, c := range d.Comments {
+			comments[i] = Comment{
+				Author:    c.Author,
+				Text:      c.Text,
+				CreatedAt: c.CreatedAt,
+			}
+		}
+	}
 	return Item{
 		ID:        d.ID,
 		Title:     d.Title,
@@ -64,6 +94,7 @@ func (d firestoreItemDoc) toItem() Item {
 		Queue:     q,
 		Position:  d.Position,
 		Text:      d.Text,
+		Comments:  comments,
 		Data:      maps.Clone(d.Data),
 		Links:     slices.Clone(d.Links),
 		Owner:     d.Owner,
@@ -274,6 +305,7 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 	var result Item
 	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		stored := item.Clone()
+		stored.Comments = normalizeComments(stored.Comments, identity, item.UpdatedAt)
 
 		if stored.ID == "" {
 			id, err := generateFirestoreID()
@@ -308,6 +340,9 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 			return fmt.Errorf("decode existing item %q: %w", stored.ID, err)
 		}
 		existing := existingDoc.toItem()
+		if item.Comments == nil && len(existing.Comments) > 0 {
+			stored.Comments = slices.Clone(existing.Comments)
+		}
 		oldQueue := existing.Queue
 
 		oldItems, err := s.queryQueueItems(ctx, tx, oldQueue)
@@ -359,6 +394,58 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 			}
 		}
 		result = stored
+		return nil
+	})
+	if err != nil {
+		return Item{}, err
+	}
+	return result.Clone(), nil
+}
+
+// AddComment appends a new comment to an existing item's comment thread in Firestore.
+func (s *FirestoreStore) AddComment(ctx context.Context, identity, itemID, text string) (Item, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return Item{}, errors.New("identity is required")
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return Item{}, errors.New("item id is required")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Item{}, errors.New("comment text is required")
+	}
+
+	var result Item
+	err := s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+		docRef := s.col().Doc(itemID)
+		docSnap, err := tx.Get(docRef)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return fmt.Errorf("item %q not found", itemID)
+			}
+			return err
+		}
+		var existingDoc firestoreItemDoc
+		if err := docSnap.DataTo(&existingDoc); err != nil {
+			return fmt.Errorf("decode existing item %q: %w", itemID, err)
+		}
+		if existingDoc.ID == "" {
+			existingDoc.ID = docRef.ID
+		}
+		updated := existingDoc.toItem()
+		now := s.now()
+		updated.Comments = append(updated.Comments, Comment{
+			Author:    identity,
+			Text:      text,
+			CreatedAt: now,
+		})
+		updated.UpdatedAt = now
+		if err := tx.Set(docRef, toFirestoreDoc(updated)); err != nil {
+			return err
+		}
+		result = updated
 		return nil
 	})
 	if err != nil {

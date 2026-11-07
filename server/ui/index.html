@@ -598,6 +598,33 @@
           });
           break;
         }
+        case "TextField": {
+          el = document.createElement("label");
+          el.className = "form-field a2ui-textfield";
+          el.dataset.id = comp.id;
+          const labelSpan = document.createElement("span");
+          labelSpan.textContent = String(this.resolveDynamic(comp.label));
+          el.appendChild(labelSpan);
+          const isLong = comp.variant === "longText";
+          const inputEl = document.createElement(isLong ? "textarea" : "input");
+          if (!isLong) {
+            inputEl.type = comp.variant === "number" ? "number" : comp.variant === "obscured" ? "password" : "text";
+          } else {
+            inputEl.rows = 3;
+          }
+          if (comp.placeholder != null) {
+            inputEl.placeholder = String(this.resolveDynamic(comp.placeholder));
+          }
+          inputEl.value = String(this.resolveDynamic(comp.value));
+          inputEl.addEventListener("click", (e) => e.stopPropagation());
+          inputEl.addEventListener("input", () => {
+            if (comp.value && typeof comp.value === "object" && typeof comp.value.path === "string") {
+              this.setByPointer(comp.value.path, inputEl.value);
+            }
+          });
+          el.appendChild(inputEl);
+          break;
+        }
         case "Modal": {
           el = document.createElement("div");
           el.className = "a2ui-modal-wrapper";
@@ -606,6 +633,10 @@
           const contentComp = this.components.get(comp.content);
           const dialog = document.createElement("dialog");
           dialog.className = "a2ui-modal-dialog";
+          const itemId = comp.metadata && comp.metadata.extensions && comp.metadata.extensions.qmcp_item_id;
+          if (itemId) {
+            dialog.dataset.itemId = String(itemId);
+          }
           const dialogHeader = document.createElement("div");
           dialogHeader.className = "a2ui-modal-header";
           const closeBtn = document.createElement("button");
@@ -786,6 +817,8 @@
 
   function renderA2UIMessages(messages) {
     if (!Array.isArray(messages) || messages.length === 0) return;
+    const openDialog = viewport.querySelector("dialog.a2ui-modal-dialog[open]");
+    const openModalItemId = openDialog ? openDialog.dataset.itemId : "";
     jsonInspector.textContent = JSON.stringify(messages, null, 2);
     const surf = new A2UISurfaceState("qmcp");
     surf.applyMessages(messages);
@@ -798,6 +831,14 @@
       onAction: handleA2UIAction,
       onDropItem: handleDropItem,
     });
+    if (openModalItemId) {
+      for (const dlg of viewport.querySelectorAll("dialog.a2ui-modal-dialog")) {
+        if (dlg.dataset.itemId === openModalItemId) {
+          dlg.showModal();
+          break;
+        }
+      }
+    }
   }
 
   function extractA2UIFromToolResult(result) {
@@ -874,6 +915,16 @@
       } else if (action.event.name === "get_queue" && args.queue) {
         setActiveTab(args.queue);
         args.all_owners = allOwnersInput.checked;
+      }
+      if (action.event.name === "add_comment") {
+        if (!args.text || !String(args.text).trim()) {
+          setStatus("Comment text is required");
+          return;
+        }
+        args.identity = identityInput.value.trim() || args.identity || "muncus";
+        await invokeTool("add_comment", args, false);
+        await refreshCurrentView();
+        return;
       }
       await invokeTool(action.event.name, args, action.event.name !== "upsert_item");
       if (action.event.name === "upsert_item") {

@@ -16,6 +16,9 @@ func TestFirestoreStore_DocRoundTripAndHelpers(t *testing.T) {
 		Queue:     QueueNeedsAttention,
 		Position:  2,
 		Text:      "Body text",
+		Comments: []Comment{
+			{Author: "muncus", Text: "First comment", CreatedAt: now},
+		},
 		Data:      map[string]any{"env": "prod"},
 		Links:     []string{"https://firebase.google.com/docs/firestore"},
 		Owner:     "muncus",
@@ -24,7 +27,7 @@ func TestFirestoreStore_DocRoundTripAndHelpers(t *testing.T) {
 
 	doc := toFirestoreDoc(orig)
 	got := doc.toItem()
-	if got.ID != orig.ID || got.Title != orig.Title || got.Status != orig.Status || got.Queue != orig.Queue || got.Position != orig.Position || got.Owner != orig.Owner {
+	if got.ID != orig.ID || got.Title != orig.Title || got.Status != orig.Status || got.Queue != orig.Queue || got.Position != orig.Position || got.Owner != orig.Owner || len(got.Comments) != 1 || got.Comments[0].Text != "First comment" {
 		t.Fatalf("round-trip mismatch: got %+v, want %+v", got, orig)
 	}
 

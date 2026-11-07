@@ -116,8 +116,8 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools failed: %v", err)
 	}
-	if len(toolsRes.Tools) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(toolsRes.Tools))
+	if len(toolsRes.Tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(toolsRes.Tools))
 	}
 	for _, tool := range toolsRes.Tools {
 		uiMeta, ok := tool.Meta["ui"].(map[string]any)
@@ -219,6 +219,30 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 		t.Fatalf("unexpected get_queue output: %+v", gotQueue)
 	}
 	assertValidA2UIResource(t, validator, getRes, SurfaceQueueID)
+
+	// 4b. Call add_comment and verify the card summary now displays the last comment while Modal has both Text and Comments.
+	commentRes, err := cliSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "add_comment",
+		Arguments: map[string]any{
+			"identity": "reviewer-2",
+			"id":       inserted.ID,
+			"text":     "Looks **good** to me!",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool add_comment failed: %v", err)
+	}
+	commentedItem := decodeStructured[AddCommentOutput](t, commentRes).Item
+	if len(commentedItem.Comments) != 1 || commentedItem.Comments[0].Author != "reviewer-2" || commentedItem.Comments[0].Text != "Looks **good** to me!" {
+		t.Fatalf("unexpected item comments after add_comment: %+v", commentedItem.Comments)
+	}
+	commentSurf := assertValidA2UIResource(t, validator, commentRes, SurfaceItemID)
+	if cardSummaryComp, ok := commentSurf.Component("item-text"); !ok || cardSummaryComp.Metadata == nil || !strings.Contains(cardSummaryComp.Metadata.Extensions["qmcp_html"].(string), "reviewer-2:") || !strings.Contains(cardSummaryComp.Metadata.Extensions["qmcp_html"].(string), "<strong>good</strong>") {
+		t.Errorf("expected card summary to show last comment after add_comment, got %+v", cardSummaryComp)
+	}
+	if commentCardText, ok := commentSurf.Component("item-comment-0-text"); !ok || commentCardText.Metadata == nil || !strings.Contains(commentCardText.Metadata.Extensions["qmcp_html"].(string), "<strong>good</strong>") {
+		t.Errorf("expected comment thread item inside Modal, got %+v", commentCardText)
+	}
 
 	// 5. Replace item with status=done -> verify auto-move to Archive + A2UI surface.
 	updateRes, err := cliSession.CallTool(ctx, &mcp.CallToolParams{

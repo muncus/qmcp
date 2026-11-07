@@ -21,6 +21,7 @@ type Store interface {
 	ListQueues(ctx context.Context, identity string) ([]QueueSummary, error)
 	GetQueue(ctx context.Context, opts GetQueueOptions) ([]Item, error)
 	UpsertItem(ctx context.Context, identity string, item Item) (Item, error)
+	AddComment(ctx context.Context, identity, itemID, text string) (Item, error)
 }
 
 // ChangeNotifier is an optional interface implemented by stores that can push
@@ -387,6 +388,7 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 
 	item.UpdatedAt = s.now()
 	stored := item.Clone()
+	stored.Comments = normalizeComments(stored.Comments, identity, item.UpdatedAt)
 
 	if stored.ID == "" {
 		id, err := s.generateUniqueIDLocked()
@@ -413,6 +415,10 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 		s.mu.Unlock()
 		return Item{}, fmt.Errorf("item %q not found", stored.ID)
 	}
+	existing := s.queues[oldQueue][oldIdx]
+	if item.Comments == nil && len(existing.Comments) > 0 {
+		stored.Comments = slices.Clone(existing.Comments)
+	}
 	oldPos := oldIdx + 1
 
 	targetPos := stored.Position
@@ -436,6 +442,79 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 	s.mu.Unlock()
 	s.notifySubscribers()
 	return res, nil
+}
+
+// AddComment appends a new comment to an existing item's comment thread.
+func (s *JSONLStore) AddComment(_ context.Context, identity, itemID, text string) (Item, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return Item{}, errors.New("identity is required")
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return Item{}, errors.New("item id is required")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Item{}, errors.New("comment text is required")
+	}
+
+	s.mu.Lock()
+	s.reloadIfChangedLocked()
+
+	q, idx, ok := s.findByIDLocked(itemID)
+	if !ok {
+		s.mu.Unlock()
+		return Item{}, fmt.Errorf("item %q not found", itemID)
+	}
+
+	prevQueue := slices.Clone(s.queues[q])
+	now := s.now()
+	updated := s.queues[q][idx].Clone()
+	updated.Comments = append(updated.Comments, Comment{
+		Author:    identity,
+		Text:      text,
+		CreatedAt: now,
+	})
+	updated.UpdatedAt = now
+	s.queues[q][idx] = updated
+
+	if err := s.flushLocked(); err != nil {
+		s.queues[q] = prevQueue
+		s.mu.Unlock()
+		return Item{}, err
+	}
+	res := updated.Clone()
+	s.mu.Unlock()
+	s.notifySubscribers()
+	return res, nil
+}
+
+func normalizeComments(comments []Comment, defaultAuthor string, now time.Time) []Comment {
+	if len(comments) == 0 {
+		return nil
+	}
+	out := make([]Comment, 0, len(comments))
+	for _, c := range comments {
+		txt := strings.TrimSpace(c.Text)
+		if txt == "" {
+			continue
+		}
+		author := strings.TrimSpace(c.Author)
+		if author == "" {
+			author = defaultAuthor
+		}
+		ts := c.CreatedAt
+		if ts.IsZero() {
+			ts = now
+		}
+		out = append(out, Comment{
+			Author:    author,
+			Text:      txt,
+			CreatedAt: ts,
+		})
+	}
+	return out
 }
 
 func (s *JSONLStore) findByIDLocked(id string) (QueueName, int, bool) {
