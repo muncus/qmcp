@@ -18,30 +18,42 @@ const (
 	SurfaceItemID   = "qmcp-item"
 )
 
-// BuildQueuesSummarySurface builds an A2UI surface using the basic catalog
-// displaying all queues and their item counts.
-func BuildQueuesSummarySurface(identity string, queues []queue.QueueSummary) []a2ui.AgentMessage {
+// BuildQueuesSummarySurface builds a multi-column A2UI Kanban board surface
+// using the basic catalog, displaying all queues as columns with draggable item cards.
+func BuildQueuesSummarySurface(identity string, queues []queue.QueueSummary, itemsByQueue map[queue.QueueName][]queue.Item) []a2ui.AgentMessage {
 	surf := a2uibuild.NewSurface(SurfaceQueuesID, a2ui.BasicCatalogID)
 
 	surf = surf.Add(a2uibuild.Text("header", a2ui.StringBinding("/title")))
 	surf = surf.Add(a2uibuild.Divider("header-divider"))
 
-	cardIDs := make([]string, 0, len(queues))
+	laneIDs := make([]string, 0, len(queues))
 	queueData := make([]any, 0, len(queues))
 
-	for i, q := range queues {
-		p := fmt.Sprintf("queue-%d", i)
+	laneIdx := 0
+	for _, q := range queues {
+		if q.Name == queue.QueueArchive {
+			continue
+		}
+		i := laneIdx
+		laneIdx++
+		p := fmt.Sprintf("lane-%d", i)
 		nameID := p + "-name"
 		countsID := p + "-counts"
 		btnLabelID := p + "-open-label"
 		btnID := p + "-open-btn"
-		colID := p + "-col"
-		cardID := p + "-card"
+		hdrRowID := p + "-header"
+		divID := p + "-divider"
+		itemsColID := p + "-items"
+		laneColID := p + "-col"
+		laneCardID := p + "-card"
 
 		surf = surf.Add(a2uibuild.Text(nameID, a2ui.StringBinding(fmt.Sprintf("/queues/%d/name", i))))
-		surf = surf.Add(a2uibuild.Text(countsID, a2ui.StringLiteral(fmt.Sprintf("Owner (%s): %d | Total: %d", identity, q.CallerCount, q.TotalCount))))
-		surf = surf.Add(a2uibuild.Text(btnLabelID, a2ui.StringLiteral("View Queue")))
-		surf = surf.Add(a2uibuild.Button(btnID, a2ui.Action{
+		countsComp := a2uibuild.Text(countsID, a2ui.StringLiteral(fmt.Sprintf("%d mine • %d total", q.CallerCount, q.TotalCount)))
+		countsComp.Text.Variant = a2ui.TextVariantCaption
+		surf = surf.Add(countsComp)
+
+		surf = surf.Add(a2uibuild.Text(btnLabelID, a2ui.StringLiteral("Focus")))
+		openBtn := a2uibuild.Button(btnID, a2ui.Action{
 			Event: &a2ui.EventAction{
 				Name: "get_queue",
 				Context: map[string]a2ui.DynamicValue{
@@ -49,24 +61,70 @@ func BuildQueuesSummarySurface(identity string, queues []queue.QueueSummary) []a
 					"queue":    a2ui.ValueString(string(q.Name)),
 				},
 			},
-		}, btnLabelID))
-		surf = surf.Add(a2uibuild.Column(colID, a2uibuild.Children(nameID, countsID, btnID)))
-		surf = surf.Add(a2uibuild.Card(cardID, colID))
+		}, btnLabelID)
+		openBtn.Button.Variant = a2ui.ButtonVariantBorderless
+		surf = surf.Add(openBtn)
 
-		cardIDs = append(cardIDs, cardID)
+		hdrRow := a2uibuild.Row(hdrRowID, a2uibuild.Children(nameID, countsID, btnID))
+		hdrRow.Row.Align = a2ui.LayoutAlignCenter
+		surf = surf.Add(hdrRow)
+		surf = surf.Add(a2uibuild.Divider(divID))
+
+		qItems := itemsByQueue[q.Name]
+		itemData := make([]any, 0, len(qItems))
+		itemCardIDs := make([]string, 0, max(1, len(qItems)))
+
+		if len(qItems) == 0 {
+			emptyID := p + "-empty"
+			emptyComp := a2uibuild.Text(emptyID, a2ui.StringLiteral("Empty — drag an item here"))
+			emptyComp.Text.Variant = a2ui.TextVariantCaption
+			surf = surf.Add(emptyComp)
+			itemCardIDs = append(itemCardIDs, emptyID)
+		} else {
+			for j, it := range qItems {
+				ip := fmt.Sprintf("%s-item-%d", p, j)
+				cardID := ip + "-card"
+				dataPath := fmt.Sprintf("/queues/%d/items/%d", i, j)
+				surf = addItemCardComponents(surf, identity, ip, cardID, dataPath, it)
+				itemCardIDs = append(itemCardIDs, cardID)
+				itemData = append(itemData, itemToDataMap(it))
+			}
+		}
+
+		surf = surf.Add(a2uibuild.Column(itemsColID, a2uibuild.Children(itemCardIDs...)))
+		surf = surf.Add(a2uibuild.Column(laneColID, a2uibuild.Children(hdrRowID, divID, itemsColID)))
+
+		laneCard := a2uibuild.Card(laneCardID, laneColID)
+		laneCard.Weight = new(1.0)
+		laneCard.Metadata = &a2ui.Metadata{
+			Extensions: map[string]any{
+				"qmcp_drop_zone": map[string]any{
+					"action":   "upsert_item",
+					"identity": identity,
+					"queue":    string(q.Name),
+				},
+			},
+		}
+		surf = surf.Add(laneCard)
+
+		laneIDs = append(laneIDs, laneCardID)
 		queueData = append(queueData, map[string]any{
 			"name":         string(q.Name),
 			"total_count":  q.TotalCount,
 			"caller_count": q.CallerCount,
+			"items":        itemData,
 		})
 	}
 
-	surf = surf.Add(a2uibuild.Column("queues-list", a2uibuild.Children(cardIDs...)))
-	surf = surf.Add(a2uibuild.Column(a2uistate.RootID, a2uibuild.Children("header", "header-divider", "queues-list")))
+	boardRow := a2uibuild.Row("kanban-board", a2uibuild.Children(laneIDs...))
+	boardRow.Row.Align = a2ui.LayoutAlignStart
+	surf = surf.Add(boardRow)
+
+	surf = surf.Add(a2uibuild.Column(a2uistate.RootID, a2uibuild.Children("header", "header-divider", "kanban-board")))
 
 	surf = surf.WithData(map[string]any{
 		"identity": identity,
-		"title":    fmt.Sprintf("Queues (%s)", identity),
+		"title":    fmt.Sprintf("Kanban Overview (%s)", identity),
 		"queues":   queueData,
 	})
 
@@ -82,9 +140,10 @@ func BuildQueueSurface(identity string, qName queue.QueueName, items []queue.Ite
 	surf = surf.Add(a2uibuild.Divider("header-divider"))
 
 	itemData := make([]any, 0, len(items))
+	var listChildID string
 	if len(items) == 0 {
-		surf = surf.Add(a2uibuild.Text("empty-state", a2ui.StringLiteral("No items in this queue.")))
-		surf = surf.Add(a2uibuild.Column(a2uistate.RootID, a2uibuild.Children("header", "header-divider", "empty-state")))
+		listChildID = "empty-state"
+		surf = surf.Add(a2uibuild.Text(listChildID, a2ui.StringLiteral("No items in this queue.")))
 	} else {
 		cardIDs := make([]string, 0, len(items))
 		for i, it := range items {
@@ -94,9 +153,21 @@ func BuildQueueSurface(identity string, qName queue.QueueName, items []queue.Ite
 			cardIDs = append(cardIDs, cardID)
 			itemData = append(itemData, itemToDataMap(it))
 		}
-		surf = surf.Add(a2uibuild.Column("items-list", a2uibuild.Children(cardIDs...)))
-		surf = surf.Add(a2uibuild.Column(a2uistate.RootID, a2uibuild.Children("header", "header-divider", "items-list")))
+		listChildID = "items-list"
+		itemsCol := a2uibuild.Column(listChildID, a2uibuild.Children(cardIDs...))
+		itemsCol.Metadata = &a2ui.Metadata{
+			Extensions: map[string]any{
+				"qmcp_drop_zone": map[string]any{
+					"action":   "upsert_item",
+					"identity": identity,
+					"queue":    string(qName),
+				},
+			},
+		}
+		surf = surf.Add(itemsCol)
 	}
+
+	surf = surf.Add(a2uibuild.Column(a2uistate.RootID, a2uibuild.Children("header", "header-divider", listChildID)))
 
 	surf = surf.WithData(map[string]any{
 		"identity": identity,
@@ -144,9 +215,11 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 	titleID := prefix + "-title"
 	metaID := prefix + "-meta"
 	surf = surf.Add(a2uibuild.Text(titleID, a2ui.StringBinding(dataPath+"/title")))
-	surf = surf.Add(a2uibuild.Text(metaID, a2ui.StringLiteral(
-		fmt.Sprintf("#%d • %s • status: %s • owner: %s (id: %s)", it.Position, it.Queue, it.Status, it.Owner, it.ID),
-	)))
+	metaComp := a2uibuild.Text(metaID, a2ui.StringLiteral(
+		fmt.Sprintf("#%d • %s • status: %s • owner: %s", it.Position, it.Queue, it.Status, it.Owner),
+	))
+	metaComp.Text.Variant = a2ui.TextVariantCaption
+	surf = surf.Add(metaComp)
 
 	colChildren := []string{titleID, metaID}
 
@@ -242,7 +315,25 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 	colID := prefix + "-col"
 	surf = surf.Add(a2uibuild.Column(colID, a2uibuild.Children(colChildren...)))
-	surf = surf.Add(a2uibuild.Card(cardID, colID))
+
+	card := a2uibuild.Card(cardID, colID)
+	card.Metadata = &a2ui.Metadata{
+		Extensions: map[string]any{
+			"qmcp_draggable": map[string]any{
+				"action":   "upsert_item",
+				"identity": identity,
+				"id":       it.ID,
+				"title":    it.Title,
+				"status":   string(it.Status),
+				"queue":    string(it.Queue),
+				"position": it.Position,
+				"owner":    it.Owner,
+				"text":     it.Text,
+				"links":    it.Links,
+			},
+		},
+	}
+	surf = surf.Add(card)
 	return surf
 }
 

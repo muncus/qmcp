@@ -9,7 +9,8 @@ import (
 
 // ListQueuesInput defines the input arguments for the list_queues tool.
 type ListQueuesInput struct {
-	Identity string `json:"identity" jsonschema:"Identity string of the caller"`
+	Identity  string `json:"identity" jsonschema:"Identity string of the caller"`
+	AllOwners bool   `json:"all_owners,omitempty" jsonschema:"Set to true to include items across all owners in the A2UI Kanban board"`
 }
 
 // ListQueuesOutput defines the structured output for the list_queues tool.
@@ -72,15 +73,19 @@ func New(store queue.Store) *mcp.Server {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_queues",
-		Description: "List all queues along with total item counts and caller-owned item counts.",
+		Description: "List all queues along with total item counts and caller-owned item counts, and render a Kanban board A2UI surface.",
 		Meta:        mcpAppToolMeta(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ListQueuesInput) (*mcp.CallToolResult, ListQueuesOutput, error) {
 		queues, err := store.ListQueues(ctx, in.Identity)
 		if err != nil {
 			return nil, ListQueuesOutput{}, err
 		}
+		itemsByQueue, err := loadItemsByQueue(ctx, store, in.Identity, in.AllOwners, queues)
+		if err != nil {
+			return nil, ListQueuesOutput{}, err
+		}
 		out := ListQueuesOutput{Queues: queues}
-		msgs := BuildQueuesSummarySurface(in.Identity, queues)
+		msgs := BuildQueuesSummarySurface(in.Identity, queues, itemsByQueue)
 		return toolResultWithA2UI("a2ui://qmcp/queues", out, msgs)
 	})
 

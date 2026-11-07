@@ -182,7 +182,16 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	if listed.Queues[0].Name != queue.QueueInbox || listed.Queues[0].TotalCount != 1 || listed.Queues[0].CallerCount != 1 {
 		t.Errorf("unexpected Inbox counts: %+v", listed.Queues[0])
 	}
-	assertValidA2UIResource(t, validator, listRes, SurfaceQueuesID)
+	boardSurf := assertValidA2UIResource(t, validator, listRes, SurfaceQueuesID)
+	if boardRow, ok := boardSurf.Component("kanban-board"); !ok || boardRow.Row == nil || len(boardRow.Row.Children.IDs) != 3 {
+		t.Errorf("expected kanban-board Row with 3 lanes, got %+v (ok=%v)", boardRow, ok)
+	}
+	if laneCard, ok := boardSurf.Component("lane-0-card"); !ok || laneCard.Metadata == nil || laneCard.Metadata.Extensions["qmcp_drop_zone"] == nil {
+		t.Errorf("expected lane-0-card with qmcp_drop_zone metadata extension, got %+v", laneCard)
+	}
+	if itemCard, ok := boardSurf.Component("lane-0-item-0-card"); !ok || itemCard.Metadata == nil || itemCard.Metadata.Extensions["qmcp_draggable"] == nil {
+		t.Errorf("expected lane-0-item-0-card with qmcp_draggable metadata extension, got %+v", itemCard)
+	}
 
 	// 4. Call get_queue for Inbox and verify A2UI surface.
 	getRes, err := cliSession.CallTool(ctx, &mcp.CallToolParams{

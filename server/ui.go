@@ -145,8 +145,13 @@ func handleAPITool(w http.ResponseWriter, r *http.Request, store queue.Store) {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
+		itemsByQueue, err := loadItemsByQueue(ctx, store, in.Identity, in.AllOwners, queues)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
 		out := ListQueuesOutput{Queues: queues}
-		msgs := BuildQueuesSummarySurface(in.Identity, queues)
+		msgs := BuildQueuesSummarySurface(in.Identity, queues, itemsByQueue)
 		_ = json.NewEncoder(w).Encode(apiToolResponse{
 			StructuredContent: out,
 			A2UI:              msgs,
@@ -214,4 +219,23 @@ func handleAPITool(w http.ResponseWriter, r *http.Request, store queue.Store) {
 func writeAPIError(w http.ResponseWriter, status int, err error) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(apiToolResponse{Error: err.Error()})
+}
+
+func loadItemsByQueue(ctx context.Context, store queue.Store, identity string, allOwners bool, queues []queue.QueueSummary) (map[queue.QueueName][]queue.Item, error) {
+	out := make(map[queue.QueueName][]queue.Item, len(queues))
+	for _, q := range queues {
+		if q.Name == queue.QueueArchive {
+			continue
+		}
+		items, err := store.GetQueue(ctx, queue.GetQueueOptions{
+			Identity:  identity,
+			Queue:     q.Name,
+			AllOwners: allOwners,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out[q.Name] = items
+	}
+	return out, nil
 }
