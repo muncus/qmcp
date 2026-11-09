@@ -12,7 +12,7 @@ For now, the server provides a fixed set of global queues (designed to allow cus
 
 Queues are global across the server. Every MCP tool call accepts a caller `identity` string:
 - **Reads (`list_queues`, `get_queue`):** Filter items where `owner == identity` by default, with an option to view items across all owners (or filter by a specific `owner`).
-- **Writes (`upsert_item`):** Default `owner` to the caller's `identity` if `owner` is not explicitly specified.
+- **Writes (`upsert_item`, `add_comment`):** Default `owner` / `author` to the caller's `identity` if not explicitly specified.
 
 ## Data Model
 
@@ -30,7 +30,8 @@ Queues are global across the server. Every MCP tool call accepts a caller `ident
   - Omitting `position` (`0`) on insert or queue change appends the item to the end of the target queue.
   - Omitting `position` (`0`) when updating an item in the same queue preserves its current position.
   - Specifying `position >= 1` inserts/moves the item to that 1-based position and shifts subsequent items in that queue.
-- `text` (`string`, optional): Detailed description or body text.
+- `text` (`string`, optional): Detailed description or body text (server-rendered Markdown).
+- `comments` (`[]Comment`, optional): Ordered thread of comments (`author`, `text`, `created_at`) on the item.
 - `data` (`map[string]any`, optional): Arbitrary structured JSON key-value metadata.
 - `links` (`[]string`, optional): List of URLs, URIs, or item references.
 - `owner` (`string`): Identity string of the item's owner (defaults to caller's `identity` when omitted).
@@ -44,6 +45,7 @@ All tools require an `identity` (`string`) parameter identifying the caller.
 Returns all available queues along with item counts (`total_count` and `caller_count` where `owner == identity`).
 - **Inputs:**
   - `identity` (`string`, required)
+  - `all_owners` (`bool`, optional)
 
 ### 2. `get_queue`
 Returns items in a specified queue ordered by `position` ascending.
@@ -65,16 +67,24 @@ Creates a new item if `id` is omitted, or replaces an existing item if `id` is p
   - `status` (`string`, optional): Defaults to `open` when omitted.
   - `position` (`int`, optional): Target 1-indexed position in the queue (`0` means default/append or keep position).
   - `text` (`string`, optional)
+  - `comments` (`[]Comment`, optional)
   - `data` (`map[string]any`, optional)
   - `links` (`[]string`, optional)
   - `owner` (`string`, optional): Defaults to `identity` when omitted.
 - **Returns:** The created or updated `Item`.
 
+### 4. `add_comment`
+Appends a structured comment (`author`, `text`, `created_at`) to an existing item's comment thread.
+- **Inputs:**
+  - `identity` (`string`, required)
+  - `id` (`string`, required)
+  - `text` (`string`, required)
+- **Returns:** The updated `Item`.
+
 ## Architecture & Persistence
 
-- **Language & SDK:** Go using the official MCP SDK (`github.com/modelcontextprotocol/go-sdk`).
-- **Transport:** `stdio` by default, with an optional CLI flag for HTTP/SSE transport.
-- **Storage Interface:** A clean `Store` interface decoupling tool handlers from persistence so the backend can easily be swapped to SQLite in the future.
-- **JSONL Backend (Initial):**
-  - Configured via CLI flag / environment variable (e.g., `-store-file` / `QMCP_STORE_FILE`).
-  - Loads all items into memory at startup, protects state with a mutex (`sync.RWMutex`), and flushes the current items (one JSON object per line) to the JSONL file on every write.
+- **Language & SDK:** Go using the official MCP SDK (`github.com/modelcontextprotocol/go-sdk`) and A2UI v1.0 (`github.com/tmc/a2ui`).
+- **Transport:** `stdio` by default, with an optional `-http` flag for Streamable HTTP (`/mcp`) and live browser Kanban UI (`/`).
+- **Storage Interface:** A clean `Store` interface supporting:
+  - **JSONL Backend (default):** Configured via `-store-file` / `QMCP_STORE_FILE`.
+  - **Google Cloud Firestore Backend:** Configured via `-firestore-project` / `QMCP_FIRESTORE_PROJECT`.

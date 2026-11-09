@@ -406,18 +406,14 @@
         </select>
       </label>
       <label class="form-field">
-        Position (1-indexed, 0 = append)
-        <input type="number" id="form-position" min="0" value="0" />
-      </label>
-      <label class="form-field">
         Owner (defaults to Identity)
         <input type="text" id="form-owner" placeholder="Optional owner override" />
       </label>
     </div>
     <div class="form-grid">
       <label class="form-field">
-        Text / Description
-        <textarea id="form-text" rows="2" placeholder="Optional details..."></textarea>
+        Text / Description (Shift+Enter to submit)
+        <textarea id="form-text" rows="2" placeholder="Optional details... (Shift+Enter to save)"></textarea>
       </label>
       <label class="form-field">
         Links (comma-separated URLs)
@@ -1079,6 +1075,13 @@
     upsertDrawer.classList.add("hidden");
   });
 
+  document.getElementById("form-text").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      upsertDrawer.requestSubmit();
+    }
+  });
+
   upsertDrawer.addEventListener("submit", async (e) => {
     e.preventDefault();
     const identity = identityInput.value.trim() || "muncus";
@@ -1090,7 +1093,6 @@
       title: document.getElementById("form-title").value.trim(),
       queue: document.getElementById("form-queue").value,
       status: document.getElementById("form-status").value,
-      position: parseInt(document.getElementById("form-position").value || "0", 10),
       owner: document.getElementById("form-owner").value.trim(),
       text: document.getElementById("form-text").value.trim(),
       links,
