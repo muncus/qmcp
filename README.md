@@ -5,6 +5,8 @@
 - **Agent Workflow Guide:** [USAGE.md](USAGE.md)
 - **Design Specification:** [docs/design.md](docs/design.md)
 
+![qmcp kanban](docs/qmcp-kanban.png)
+
 ## Features
 
 - **4 Standard Queues:** `Inbox`, `Outbox`, `Needs Attention`, and `Archive` (items marked `done` or `cancelled` auto-archive).
