@@ -36,7 +36,8 @@ type ListQueuesOutput struct {
 type GetQueueInput struct {
 	Identity  string          `json:"identity" jsonschema:"Identity string of the caller"`
 	Queue     queue.QueueName `json:"queue" jsonschema:"Queue name (Inbox, Outbox, Needs Attention, Archive)"`
-	Owner     string          `json:"owner,omitempty" jsonschema:"Filter by owner identity (defaults to caller identity; pass '*' for all owners)"`
+	Owner     string          `json:"owner,omitempty" jsonschema:"Filter by owner identity (pass '*' for all owners)"`
+	Assignee  string          `json:"assignee,omitempty" jsonschema:"Optional filter by assignee identity"`
 	AllOwners bool            `json:"all_owners,omitempty" jsonschema:"Set to true to return items across all owners"`
 	Status    queue.Status    `json:"status,omitempty" jsonschema:"Optional filter by item status (open, in_progress, blocked, done, cancelled)"`
 	Limit     int             `json:"limit,omitempty" jsonschema:"Maximum number of items to return (0 means no limit)"`
@@ -61,7 +62,8 @@ type UpsertItemInput struct {
 	Comments []queue.Comment `json:"comments,omitempty" jsonschema:"Optional thread of comments on the item"`
 	Data     map[string]any  `json:"data,omitempty" jsonschema:"Arbitrary structured key-value metadata"`
 	Links    []string        `json:"links,omitempty" jsonschema:"List of URLs, URIs, or item references"`
-	Owner    string          `json:"owner,omitempty" jsonschema:"Owner identity string (defaults to caller identity when omitted)"`
+	Owner    string          `json:"owner,omitempty" jsonschema:"Owner (requester) identity string (defaults to caller identity on insert; preserved on update when omitted)"`
+	Assignee string          `json:"assignee,omitempty" jsonschema:"Assignee (active worker) identity string (defaults to caller identity when status is set to in_progress)"`
 }
 
 // UpsertItemOutput defines the structured output for the upsert_item tool.
@@ -125,6 +127,7 @@ func New(store queue.Store) *mcp.Server {
 			Identity:  in.Identity,
 			Queue:     in.Queue,
 			Owner:     in.Owner,
+			Assignee:  in.Assignee,
 			AllOwners: in.AllOwners,
 			Status:    in.Status,
 			Limit:     in.Limit,
@@ -157,6 +160,7 @@ func New(store queue.Store) *mcp.Server {
 			Data:     in.Data,
 			Links:    in.Links,
 			Owner:    in.Owner,
+			Assignee: in.Assignee,
 		})
 		if err != nil {
 			return nil, UpsertItemOutput{}, err

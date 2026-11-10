@@ -223,6 +223,16 @@
   .a2ui-draggable-card:hover {
     border-color: var(--accent);
   }
+  .a2ui-draggable-card[data-status="in_progress"] {
+    border-color: var(--accent);
+    border-left: 4px solid var(--accent);
+    background: linear-gradient(180deg, rgba(56, 189, 248, 0.08), transparent), var(--card);
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25), 0 2px 6px rgba(0, 0, 0, 0.12);
+  }
+  .a2ui-draggable-card[data-status="in_progress"] .a2ui-text[data-id$="-meta"] {
+    color: var(--accent);
+    font-weight: 600;
+  }
   .a2ui-draggable-card:active {
     cursor: grabbing;
   }
@@ -294,6 +304,9 @@
   .a2ui-modal-dialog .a2ui-text[data-id$="-modal-title"] {
     font-size: 1.15rem;
     font-weight: 700;
+  }
+  .a2ui-collapsible-hidden {
+    display: none !important;
   }
   .a2ui-markdown p {
     margin: 0 0 6px 0;
@@ -424,6 +437,10 @@
       <label class="form-field">
         Owner (defaults to Identity)
         <input type="text" id="form-owner" placeholder="Optional owner override" />
+      </label>
+      <label class="form-field">
+        Assignee (optional worker)
+        <input type="text" id="form-assignee" placeholder="Optional assignee" />
       </label>
     </div>
     <div class="form-grid">
@@ -696,6 +713,9 @@
       // Attach A2UI Metadata Extensions for Drag & Drop (`qmcp_draggable` and `qmcp_drop_zone`)
       const ext = comp.metadata && comp.metadata.extensions;
       if (ext) {
+        if (ext.qmcp_collapsible_box) {
+          el.classList.add("a2ui-collapsible-hidden");
+        }
         if (ext.qmcp_draggable) {
           this.attachDraggable(el, ext.qmcp_draggable, handlers);
         }
@@ -709,6 +729,9 @@
 
     attachDraggable(el, dragMeta, handlers) {
       el.classList.add("a2ui-draggable-card");
+      if (dragMeta.status) {
+        el.dataset.status = String(dragMeta.status);
+      }
       el.draggable = true;
 
       el.addEventListener("dragstart", (e) => {
@@ -893,6 +916,7 @@
       status: nextStatus,
       position: targetPosition,
       owner: sourceItem.owner || identity,
+      assignee: sourceItem.assignee || "",
       text: sourceItem.text || "",
       links: Array.isArray(sourceItem.links) ? sourceItem.links : [],
     };
@@ -927,6 +951,19 @@
       } else if (action.event.name === "get_queue" && args.queue) {
         setActiveTab(args.queue);
         args.all_owners = allOwnersInput.checked;
+      }
+      if (action.event.name === "toggle_edit_text") {
+        if (args.target) {
+          const targetEl = viewport.querySelector(`[data-id="${CSS.escape(String(args.target))}"]`);
+          if (targetEl) {
+            targetEl.classList.toggle("a2ui-collapsible-hidden");
+            if (!targetEl.classList.contains("a2ui-collapsible-hidden")) {
+              const input = targetEl.querySelector("textarea, input");
+              if (input) input.focus();
+            }
+          }
+        }
+        return;
       }
       if (action.event.name === "add_comment") {
         if (!args.text || !String(args.text).trim()) {
@@ -1110,6 +1147,7 @@
       queue: document.getElementById("form-queue").value,
       status: document.getElementById("form-status").value,
       owner: document.getElementById("form-owner").value.trim(),
+      assignee: document.getElementById("form-assignee").value.trim(),
       text: document.getElementById("form-text").value.trim(),
       links,
     };

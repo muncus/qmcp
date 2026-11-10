@@ -98,7 +98,8 @@ type Item struct {
 	Comments  []Comment      `json:"comments,omitempty" jsonschema:"Ordered thread of comments on the item"`
 	Data      map[string]any `json:"data,omitempty" jsonschema:"Arbitrary structured key-value metadata"`
 	Links     []string       `json:"links,omitempty" jsonschema:"List of URLs, URIs, or item references"`
-	Owner     string         `json:"owner" jsonschema:"Identity string of the item owner"`
+	Owner     string         `json:"owner" jsonschema:"Identity string of the item owner (requester)"`
+	Assignee  string         `json:"assignee,omitempty" jsonschema:"Identity string of the user or agent currently working on the item"`
 	UpdatedAt time.Time      `json:"updated_at" jsonschema:"RFC3339 timestamp of last modification"`
 }
 
@@ -115,7 +116,7 @@ func (it Item) Clone() Item {
 type QueueSummary struct {
 	Name        QueueName `json:"name" jsonschema:"Name of the queue"`
 	TotalCount  int       `json:"total_count" jsonschema:"Total number of items in the queue across all owners"`
-	CallerCount int       `json:"caller_count" jsonschema:"Number of items in the queue owned by the caller identity"`
+	CallerCount int       `json:"caller_count" jsonschema:"Number of items in the queue owned by or assigned to the caller identity"`
 }
 
 // GetQueueOptions specifies filtering and pagination parameters for GetQueue.
@@ -123,6 +124,7 @@ type GetQueueOptions struct {
 	Identity  string
 	Queue     QueueName
 	Owner     string
+	Assignee  string
 	AllOwners bool
 	Status    Status
 	Limit     int

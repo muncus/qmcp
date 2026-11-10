@@ -300,7 +300,7 @@ func (s *JSONLStore) ListQueues(_ context.Context, identity string) ([]QueueSumm
 		list := s.queues[q]
 		callerCount := 0
 		for _, it := range list {
-			if it.Owner == identity {
+			if it.Owner == identity || it.Assignee == identity {
 				callerCount++
 			}
 		}
@@ -335,10 +335,8 @@ func (s *JSONLStore) GetQueue(_ context.Context, opts GetQueueOptions) ([]Item, 
 	}
 
 	ownerFilter := strings.TrimSpace(opts.Owner)
+	assigneeFilter := strings.TrimSpace(opts.Assignee)
 	allOwners := opts.AllOwners || ownerFilter == "*"
-	if !allOwners && ownerFilter == "" {
-		ownerFilter = opts.Identity
-	}
 
 	s.mu.Lock()
 	s.reloadIfChangedLocked()
@@ -347,7 +345,7 @@ func (s *JSONLStore) GetQueue(_ context.Context, opts GetQueueOptions) ([]Item, 
 	list := s.queues[opts.Queue]
 	matched := make([]Item, 0, len(list))
 	for _, it := range list {
-		if !allOwners && it.Owner != ownerFilter {
+		if !matchesIdentityFilters(it, opts.Identity, ownerFilter, assigneeFilter, allOwners) {
 			continue
 		}
 		if opts.Status != "" && it.Status != opts.Status {
@@ -392,10 +390,9 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 		item.Queue = QueueArchive
 	}
 
-	item.Owner = strings.TrimSpace(item.Owner)
-	if item.Owner == "" {
-		item.Owner = identity
-	}
+	explicitOwner := strings.TrimSpace(item.Owner)
+	item.Owner = explicitOwner
+	item.Assignee = strings.TrimSpace(item.Assignee)
 
 	s.mu.Lock()
 	s.reloadIfChangedLocked()
@@ -405,6 +402,12 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 	stored.Comments = normalizeComments(stored.Comments, identity, item.UpdatedAt)
 
 	if stored.ID == "" {
+		if stored.Owner == "" {
+			stored.Owner = identity
+		}
+		if stored.Status == StatusInProgress && stored.Assignee == "" {
+			stored.Assignee = identity
+		}
 		id, err := s.generateUniqueIDLocked()
 		if err != nil {
 			s.mu.Unlock()
@@ -430,6 +433,19 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 		return Item{}, fmt.Errorf("item %q not found", stored.ID)
 	}
 	existing := s.queues[oldQueue][oldIdx]
+	if stored.Owner == "" {
+		stored.Owner = existing.Owner
+		if stored.Owner == "" {
+			stored.Owner = identity
+		}
+	}
+	if stored.Assignee == "" && stored.Status == StatusInProgress {
+		if existing.Assignee != "" {
+			stored.Assignee = existing.Assignee
+		} else {
+			stored.Assignee = identity
+		}
+	}
 	if item.Comments == nil && len(existing.Comments) > 0 {
 		stored.Comments = slices.Clone(existing.Comments)
 	}
@@ -502,6 +518,25 @@ func (s *JSONLStore) AddComment(_ context.Context, identity, itemID, text string
 	s.mu.Unlock()
 	s.notifySubscribers()
 	return res, nil
+}
+
+func matchesIdentityFilters(it Item, identity, ownerFilter, assigneeFilter string, allOwners bool) bool {
+	if allOwners {
+		if assigneeFilter != "" && it.Assignee != assigneeFilter {
+			return false
+		}
+		return true
+	}
+	if ownerFilter != "" || assigneeFilter != "" {
+		if ownerFilter != "" && it.Owner != ownerFilter {
+			return false
+		}
+		if assigneeFilter != "" && it.Assignee != assigneeFilter {
+			return false
+		}
+		return true
+	}
+	return it.Owner == identity || it.Assignee == identity
 }
 
 func normalizeComments(comments []Comment, defaultAuthor string, now time.Time) []Comment {

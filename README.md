@@ -2,7 +2,7 @@
 
 **QMCP** is a Model Context Protocol (MCP) server in Go that provides shared, multi-user task queues (`Inbox`, `Outbox`, `Needs Attention`, `Archive`) with interactive **A2UI v1.0** surfaces, an embedded **MCP App** (`ui://qmcp/board`), and a live browser Kanban board.
 
-- **Agent Workflow Guide:** [USAGE.md](USAGE.md)
+- **Agent Workflow Guide:** [docs/USAGE.md](docs/USAGE.md)
 - **Design Specification:** [docs/design.md](docs/design.md)
 
 ![qmcp kanban](docs/qmcp-kanban.png)

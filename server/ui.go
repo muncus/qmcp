@@ -181,6 +181,7 @@ func handleAPITool(w http.ResponseWriter, r *http.Request, store queue.Store) {
 			Identity:  in.Identity,
 			Queue:     in.Queue,
 			Owner:     in.Owner,
+			Assignee:  in.Assignee,
 			AllOwners: in.AllOwners,
 			Status:    in.Status,
 			Limit:     in.Limit,
@@ -214,6 +215,7 @@ func handleAPITool(w http.ResponseWriter, r *http.Request, store queue.Store) {
 			Data:     in.Data,
 			Links:    in.Links,
 			Owner:    in.Owner,
+			Assignee: in.Assignee,
 		})
 		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)

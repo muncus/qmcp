@@ -216,6 +216,16 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	if modalText, ok := boardSurf.Component("lane-0-item-0-modal-text"); !ok || modalText.Metadata == nil || !strings.Contains(modalText.Metadata.Extensions["qmcp_html"].(string), "TAIL_MARKER_BEYOND_200_CHARS") {
 		t.Errorf("expected full untruncated server-rendered HTML inside Modal, got %+v", modalText)
 	}
+	if cardMeta, ok := boardSurf.Component("lane-0-item-0-meta"); !ok || cardMeta.Text == nil {
+		t.Errorf("expected card meta component, got %+v", cardMeta)
+	} else if gotMeta, _ := boardSurf.Data().ResolveString(cardMeta.Text.Text, ""); strings.Contains(gotMeta, "#1") || strings.Contains(gotMeta, "Inbox") || strings.Contains(gotMeta, "owner:") {
+		t.Errorf("expected card meta not to display position, queue, or owner, got %q", gotMeta)
+	}
+	if modalMeta, ok := boardSurf.Component("lane-0-item-0-modal-meta"); !ok || modalMeta.Text == nil {
+		t.Errorf("expected modal meta component, got %+v", modalMeta)
+	} else if gotModalMeta, _ := boardSurf.Data().ResolveString(modalMeta.Text.Text, ""); strings.Contains(gotModalMeta, "#1") {
+		t.Errorf("expected modal meta not to display position number, got %q", gotModalMeta)
+	}
 
 	// 4. Call get_queue for Inbox and verify A2UI surface.
 	getRes, err := cliSession.CallTool(ctx, &mcp.CallToolParams{
@@ -256,6 +266,33 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	}
 	if commentCardText, ok := commentSurf.Component("item-comment-0-text"); !ok || commentCardText.Metadata == nil || !strings.Contains(commentCardText.Metadata.Extensions["qmcp_html"].(string), "<strong>good</strong>") {
 		t.Errorf("expected comment thread item inside Modal, got %+v", commentCardText)
+	}
+
+	// 4c. Claim item as a worker agent with status=in_progress and verify owner is preserved and assignee is set.
+	claimRes, err := cliSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "upsert_item",
+		Arguments: map[string]any{
+			"identity": "worker-bot",
+			"id":       inserted.ID,
+			"title":    inserted.Title,
+			"status":   "in_progress",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool upsert_item (claim) failed: %v", err)
+	}
+	claimed := decodeStructured[UpsertItemOutput](t, claimRes).Item
+	if claimed.Owner != "agent-1" || claimed.Assignee != "worker-bot" || claimed.Status != queue.StatusInProgress {
+		t.Fatalf("expected Owner='agent-1', Assignee='worker-bot', Status='in_progress', got %+v", claimed)
+	}
+	claimSurf := assertValidA2UIResource(t, validator, claimRes, SurfaceItemID)
+	if gotAssignee, ok := claimSurf.Data().ResolveString(a2ui.StringBinding("/item/assignee"), ""); !ok || gotAssignee != "worker-bot" {
+		t.Errorf("expected A2UI data binding /item/assignee == 'worker-bot', got %q (ok=%v)", gotAssignee, ok)
+	}
+	if claimMeta, ok := claimSurf.Component("item-meta"); !ok || claimMeta.Text == nil {
+		t.Errorf("expected item-meta component on claimed surface, got %+v", claimMeta)
+	} else if gotClaimMeta, _ := claimSurf.Data().ResolveString(claimMeta.Text.Text, ""); !strings.Contains(gotClaimMeta, "assignee: worker-bot") || strings.Contains(gotClaimMeta, "owner:") {
+		t.Errorf("expected claimed card meta to show assignee instead of owner, got %q", gotClaimMeta)
 	}
 
 	// 5. Replace item with status=done -> verify auto-move to Archive + A2UI surface.

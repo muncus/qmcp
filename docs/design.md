@@ -11,8 +11,8 @@ For now, the server provides a fixed set of global queues (designed to allow cus
 - `Archive` (for finished or cancelled tasks)
 
 Queues are global across the server. Every MCP tool call accepts a caller `identity` string:
-- **Reads (`list_queues`, `get_queue`):** Filter items where `owner == identity` by default, with an option to view items across all owners (or filter by a specific `owner`).
-- **Writes (`upsert_item`, `add_comment`):** Default `owner` / `author` to the caller's `identity` if not explicitly specified.
+- **Reads (`list_queues`, `get_queue`):** Filter items where `owner == identity || assignee == identity` by default, with an option to view items across all owners/assignees (`all_owners: true`) or filter by a specific `owner` and/or `assignee`.
+- **Writes (`upsert_item`, `add_comment`):** Default `owner` (on insert) and `author` (on comment) to the caller's `identity` if not explicitly specified. When updating an existing item with `status: "in_progress"` and `assignee` omitted, `assignee` defaults to the caller's `identity` while `owner` is preserved.
 
 ## Data Model
 
@@ -34,7 +34,8 @@ Queues are global across the server. Every MCP tool call accepts a caller `ident
 - `comments` (`[]Comment`, optional): Ordered thread of comments (`author`, `text`, `created_at`) on the item.
 - `data` (`map[string]any`, optional): Arbitrary structured JSON key-value metadata.
 - `links` (`[]string`, optional): List of URLs, URIs, or item references.
-- `owner` (`string`): Identity string of the item's owner (defaults to caller's `identity` when omitted).
+- `owner` (`string`): Identity string of the item's owner/requester (defaults to caller's `identity` on creation; preserved on update when omitted).
+- `assignee` (`string`, optional): Identity string of the agent or user actively working on the item (defaults to caller's `identity` when `status` is set to `in_progress` and `assignee` is omitted).
 - `updated_at` (`time.Time` / RFC3339 `string`): Timestamp automatically updated on insert and any modification.
 
 ## MCP Tools
@@ -42,7 +43,7 @@ Queues are global across the server. Every MCP tool call accepts a caller `ident
 All tools require an `identity` (`string`) parameter identifying the caller.
 
 ### 1. `list_queues`
-Returns all available queues along with item counts (`total_count` and `caller_count` where `owner == identity`).
+Returns all available queues along with item counts (`total_count` and `caller_count` where `owner == identity || assignee == identity`).
 - **Inputs:**
   - `identity` (`string`, required)
   - `all_owners` (`bool`, optional)
@@ -52,7 +53,8 @@ Returns items in a specified queue ordered by `position` ascending.
 - **Inputs:**
   - `identity` (`string`, required)
   - `queue` (`string`, required): Name of the queue.
-  - `owner` (`string`, optional): Filter by owner. Defaults to `identity`. Pass `"*"` (or `all_owners: true`) to return items for all owners.
+  - `owner` (`string`, optional): Filter by owner. When both `owner` and `assignee` are omitted, defaults to items where `owner == identity || assignee == identity`. Pass `"*"` (or `all_owners: true`) to return items across all owners/assignees.
+  - `assignee` (`string`, optional): Filter by assignee.
   - `status` (`string`, optional): Filter by item status.
   - `limit` (`int`, optional): Maximum number of items to return.
   - `offset` (`int`, optional): Number of items to skip for pagination.
@@ -70,7 +72,8 @@ Creates a new item if `id` is omitted, or replaces an existing item if `id` is p
   - `comments` (`[]Comment`, optional)
   - `data` (`map[string]any`, optional)
   - `links` (`[]string`, optional)
-  - `owner` (`string`, optional): Defaults to `identity` when omitted.
+  - `owner` (`string`, optional): Defaults to `identity` on creation; preserves existing `owner` on update when omitted.
+  - `assignee` (`string`, optional): Defaults to `identity` when `status` is `in_progress` and `assignee` is omitted.
 - **Returns:** The created or updated `Item`.
 
 ### 4. `add_comment`

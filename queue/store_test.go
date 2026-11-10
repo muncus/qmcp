@@ -259,3 +259,66 @@ func TestJSONLStore_MultiUserFilteringAndPagination(t *testing.T) {
 		t.Errorf("unexpected paginated result: %+v", page)
 	}
 }
+
+func TestJSONLStore_OwnerAndAssigneeSplit(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewJSONLStore("")
+	if err != nil {
+		t.Fatalf("NewJSONLStore failed: %v", err)
+	}
+
+	// Alice creates a task in Inbox.
+	created, err := s.UpsertItem(ctx, "alice", Item{
+		Title: "Build feature X",
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem create failed: %v", err)
+	}
+	if created.Owner != "alice" || created.Assignee != "" {
+		t.Fatalf("expected Owner='alice' and Assignee='', got Owner=%q Assignee=%q", created.Owner, created.Assignee)
+	}
+
+	// Agent claims the task by setting status=in_progress without specifying Owner or Assignee.
+	// Owner should remain 'alice' and Assignee should auto-default to 'agent-1'.
+	claimed, err := s.UpsertItem(ctx, "agent-1", Item{
+		ID:     created.ID,
+		Title:  created.Title,
+		Status: StatusInProgress,
+	})
+	if err != nil {
+		t.Fatalf("UpsertItem claim failed: %v", err)
+	}
+	if claimed.Owner != "alice" {
+		t.Errorf("expected Owner 'alice' to be preserved, got %q", claimed.Owner)
+	}
+	if claimed.Assignee != "agent-1" {
+		t.Errorf("expected Assignee to auto-default to 'agent-1' on in_progress, got %q", claimed.Assignee)
+	}
+
+	// Both 'alice' (owner) and 'agent-1' (assignee) should see CallerCount=1 and see the item in default GetQueue.
+	for _, who := range []string{"alice", "agent-1"} {
+		summaries, err := s.ListQueues(ctx, who)
+		if err != nil {
+			t.Fatalf("ListQueues(%q) failed: %v", who, err)
+		}
+		if summaries[0].CallerCount != 1 {
+			t.Errorf("expected CallerCount=1 for %q, got %d", who, summaries[0].CallerCount)
+		}
+		qItems, err := s.GetQueue(ctx, GetQueueOptions{Identity: who, Queue: QueueInbox})
+		if err != nil {
+			t.Fatalf("GetQueue(%q) failed: %v", who, err)
+		}
+		if len(qItems) != 1 || qItems[0].ID != created.ID {
+			t.Errorf("expected %q to see item %q in default GetQueue, got %+v", who, created.ID, qItems)
+		}
+	}
+
+	// Explicit filter by Assignee.
+	byAssignee, err := s.GetQueue(ctx, GetQueueOptions{Identity: "bob", Queue: QueueInbox, Assignee: "agent-1"})
+	if err != nil {
+		t.Fatalf("GetQueue(Assignee='agent-1') failed: %v", err)
+	}
+	if len(byAssignee) != 1 || byAssignee[0].ID != created.ID {
+		t.Errorf("expected 1 item when filtering by Assignee='agent-1', got %+v", byAssignee)
+	}
+}

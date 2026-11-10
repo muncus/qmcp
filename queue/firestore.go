@@ -51,6 +51,7 @@ type firestoreItemDoc struct {
 	Data      map[string]any        `firestore:"data,omitempty"`
 	Links     []string              `firestore:"links,omitempty"`
 	Owner     string                `firestore:"owner"`
+	Assignee  string                `firestore:"assignee,omitempty"`
 	UpdatedAt time.Time             `firestore:"updated_at"`
 }
 
@@ -77,6 +78,7 @@ func toFirestoreDoc(it Item) firestoreItemDoc {
 		Data:      maps.Clone(it.Data),
 		Links:     slices.Clone(it.Links),
 		Owner:     it.Owner,
+		Assignee:  it.Assignee,
 		UpdatedAt: it.UpdatedAt,
 	}
 }
@@ -112,6 +114,7 @@ func (d firestoreItemDoc) toItem() Item {
 		Data:      maps.Clone(d.Data),
 		Links:     slices.Clone(d.Links),
 		Owner:     d.Owner,
+		Assignee:  d.Assignee,
 		UpdatedAt: d.UpdatedAt,
 	}
 }
@@ -215,7 +218,7 @@ func (s *FirestoreStore) ListQueues(ctx context.Context, identity string) ([]Que
 		}
 		it := d.toItem()
 		totals[it.Queue]++
-		if it.Owner == identity {
+		if it.Owner == identity || it.Assignee == identity {
 			callers[it.Queue]++
 		}
 	}
@@ -253,10 +256,8 @@ func (s *FirestoreStore) GetQueue(ctx context.Context, opts GetQueueOptions) ([]
 	}
 
 	ownerFilter := strings.TrimSpace(opts.Owner)
+	assigneeFilter := strings.TrimSpace(opts.Assignee)
 	allOwners := opts.AllOwners || ownerFilter == "*"
-	if !allOwners && ownerFilter == "" {
-		ownerFilter = opts.Identity
-	}
 
 	items, err := s.queryQueueItems(ctx, nil, opts.Queue)
 	if err != nil {
@@ -265,7 +266,7 @@ func (s *FirestoreStore) GetQueue(ctx context.Context, opts GetQueueOptions) ([]
 
 	matched := make([]Item, 0, len(items))
 	for _, it := range items {
-		if !allOwners && it.Owner != ownerFilter {
+		if !matchesIdentityFilters(it, opts.Identity, ownerFilter, assigneeFilter, allOwners) {
 			continue
 		}
 		if opts.Status != "" && it.Status != opts.Status {
@@ -311,9 +312,7 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 	}
 
 	item.Owner = strings.TrimSpace(item.Owner)
-	if item.Owner == "" {
-		item.Owner = identity
-	}
+	item.Assignee = strings.TrimSpace(item.Assignee)
 	item.UpdatedAt = s.now()
 
 	var result Item
@@ -322,6 +321,12 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 		stored.Comments = normalizeComments(stored.Comments, identity, item.UpdatedAt)
 
 		if stored.ID == "" {
+			if stored.Owner == "" {
+				stored.Owner = identity
+			}
+			if stored.Status == StatusInProgress && stored.Assignee == "" {
+				stored.Assignee = identity
+			}
 			id, err := generateFirestoreID()
 			if err != nil {
 				return err
@@ -354,6 +359,19 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 			return fmt.Errorf("decode existing item %q: %w", stored.ID, err)
 		}
 		existing := existingDoc.toItem()
+		if stored.Owner == "" {
+			stored.Owner = existing.Owner
+			if stored.Owner == "" {
+				stored.Owner = identity
+			}
+		}
+		if stored.Assignee == "" && stored.Status == StatusInProgress {
+			if existing.Assignee != "" {
+				stored.Assignee = existing.Assignee
+			} else {
+				stored.Assignee = identity
+			}
+		}
 		if item.Comments == nil && len(existing.Comments) > 0 {
 			stored.Comments = slices.Clone(existing.Comments)
 		}
