@@ -213,6 +213,37 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	if modalComp, ok := boardSurf.Component("lane-0-item-0-detail-modal"); !ok || modalComp.Modal == nil || modalComp.Modal.Content != "lane-0-item-0-modal-content" {
 		t.Errorf("expected A2UI Modal component on card, got %+v", modalComp)
 	}
+	if queuePicker, ok := boardSurf.Component("lane-0-item-0-edit-queue-input"); !ok || queuePicker.ChoicePicker == nil || len(queuePicker.ChoicePicker.Options) != 4 {
+		t.Errorf("expected queue ChoicePicker in modal edit view, got %+v", queuePicker)
+	}
+	if statusPicker, ok := boardSurf.Component("lane-0-item-0-edit-status-input"); !ok || statusPicker.ChoicePicker == nil || len(statusPicker.ChoicePicker.Options) != 5 {
+		t.Errorf("expected status ChoicePicker in modal edit view, got %+v", statusPicker)
+	}
+	if assigneeInput, ok := boardSurf.Component("lane-0-item-0-edit-assignee-input"); !ok || assigneeInput.TextField == nil || assigneeInput.Metadata == nil || assigneeInput.Metadata.Extensions["qmcp_autocomplete"] != "identities" {
+		t.Errorf("expected assignee TextField with qmcp_autocomplete='identities' in modal edit view, got %+v", assigneeInput)
+	}
+	if ids, ok := boardSurf.Data().Get("/identities"); !ok || ids == nil {
+		t.Errorf("expected /identities in A2UI surface data model, got %+v (ok=%v)", ids, ok)
+	}
+	if editLbl, ok := boardSurf.Component("lane-0-item-0-edit-text-label"); !ok || editLbl.Text == nil {
+		t.Errorf("expected edit button pencil icon label in modal, got %+v", editLbl)
+	} else if gotPencil, _ := boardSurf.Data().ResolveString(editLbl.Text.Text, ""); gotPencil != "✎" {
+		t.Errorf("expected pencil icon '✎' on edit button, got %q", gotPencil)
+	}
+	if doneLbl, ok := boardSurf.Component("lane-0-item-0-done-label"); !ok || doneLbl.Text == nil {
+		t.Errorf("expected done-label component, got %+v", doneLbl)
+	} else if gotDone, _ := boardSurf.Data().ResolveString(doneLbl.Text.Text, ""); !strings.Contains(gotDone, "Archive") {
+		t.Errorf("expected Archive button label with icon, got %q", gotDone)
+	}
+	if actionsRow, ok := boardSurf.Component("lane-0-item-0-actions"); !ok || actionsRow.Row == nil {
+		t.Errorf("expected actions row on card, got %+v", actionsRow)
+	} else {
+		for _, cid := range actionsRow.Row.Children.IDs {
+			if strings.HasSuffix(cid, "-detail-modal") || strings.HasSuffix(cid, "-detail-btn") {
+				t.Errorf("expected Details button to be removed from card actions row, found %q", cid)
+			}
+		}
+	}
 	if modalText, ok := boardSurf.Component("lane-0-item-0-modal-text"); !ok || modalText.Metadata == nil || !strings.Contains(modalText.Metadata.Extensions["qmcp_html"].(string), "TAIL_MARKER_BEYOND_200_CHARS") {
 		t.Errorf("expected full untruncated server-rendered HTML inside Modal, got %+v", modalText)
 	}
@@ -416,5 +447,27 @@ func TestHTTPBrowserAndToolAPI(t *testing.T) {
 		}
 	case <-sseCtx.Done():
 		t.Fatalf("timed out waiting for SSE change event")
+	}
+}
+
+func TestCollectIdentities_MostRecent20(t *testing.T) {
+	base := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	items := make([]queue.Item, 0, 25)
+	for i := range 25 {
+		items = append(items, queue.Item{
+			ID:        string(rune('a' + i)),
+			Owner:     "user-" + string(rune('A'+i)),
+			UpdatedAt: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	got := collectIdentities("agy-qmcp", items...)
+	if len(got) != maxKnownIdentities {
+		t.Fatalf("expected %d identities, got %d: %v", maxKnownIdentities, len(got), got)
+	}
+	if got[0] != "agy-qmcp" {
+		t.Errorf("expected caller 'agy-qmcp' first, got %q", got[0])
+	}
+	if got[1] != "user-Y" {
+		t.Errorf("expected most recently updated 'user-Y' second, got %q", got[1])
 	}
 }

@@ -16,8 +16,11 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/muncus/qmcp/queue"
@@ -52,6 +55,54 @@ func cardSummaryText(it queue.Item) string {
 		return fmt.Sprintf("**%s:** %s", last.Author, last.Text)
 	}
 	return it.Text
+}
+
+const maxKnownIdentities = 20
+
+func collectIdentities(caller string, items ...queue.Item) []string {
+	lastUsed := make(map[string]time.Time)
+	record := func(id string, ts time.Time) {
+		if id == "" {
+			return
+		}
+		if prev, ok := lastUsed[id]; !ok || ts.After(prev) {
+			lastUsed[id] = ts
+		}
+	}
+	if caller != "" {
+		var latest time.Time
+		for _, it := range items {
+			if it.UpdatedAt.After(latest) {
+				latest = it.UpdatedAt
+			}
+		}
+		record(caller, latest.Add(time.Nanosecond))
+	}
+	for _, it := range items {
+		record(it.Owner, it.UpdatedAt)
+		record(it.Assignee, it.UpdatedAt)
+		for _, c := range it.Comments {
+			ts := c.CreatedAt
+			if ts.IsZero() {
+				ts = it.UpdatedAt
+			}
+			record(c.Author, ts)
+		}
+	}
+	out := make([]string, 0, len(lastUsed))
+	for id := range lastUsed {
+		out = append(out, id)
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		if c := lastUsed[b].Compare(lastUsed[a]); c != 0 {
+			return c
+		}
+		return cmp.Compare(a, b)
+	})
+	if len(out) > maxKnownIdentities {
+		out = out[:maxKnownIdentities]
+	}
+	return out
 }
 
 const (
@@ -164,10 +215,16 @@ func BuildQueuesSummarySurface(identity string, queues []queue.QueueSummary, ite
 
 	surf = surf.Add(a2uibuild.Column(a2uistate.RootID, a2uibuild.Children("header", "header-divider", "kanban-board")))
 
+	var allItems []queue.Item
+	for _, q := range queues {
+		allItems = append(allItems, itemsByQueue[q.Name]...)
+	}
+
 	surf = surf.WithData(map[string]any{
-		"identity": identity,
-		"title":    fmt.Sprintf("Kanban Overview (%s)", identity),
-		"queues":   queueData,
+		"identity":   identity,
+		"identities": collectIdentities(identity, allItems...),
+		"title":      fmt.Sprintf("Kanban Overview (%s)", identity),
+		"queues":     queueData,
 	})
 
 	return surf.Messages()
@@ -212,10 +269,11 @@ func BuildQueueSurface(identity string, qName queue.QueueName, items []queue.Ite
 	surf = surf.Add(a2uibuild.Column(a2uistate.RootID, a2uibuild.Children("header", "header-divider", listChildID)))
 
 	surf = surf.WithData(map[string]any{
-		"identity": identity,
-		"queue":    string(qName),
-		"title":    fmt.Sprintf("%s (%d items)", qName, len(items)),
-		"items":    itemData,
+		"identity":   identity,
+		"identities": collectIdentities(identity, items...),
+		"queue":      string(qName),
+		"title":      fmt.Sprintf("%s (%d items)", qName, len(items)),
+		"items":      itemData,
 	})
 
 	return surf.Messages()
@@ -227,8 +285,9 @@ func BuildItemSurface(identity string, item queue.Item) []a2ui.AgentMessage {
 	surf := a2uibuild.NewSurface(SurfaceItemID, a2ui.BasicCatalogID)
 	surf = addItemCardComponents(surf, identity, "item", a2uistate.RootID, "/item", item)
 	surf = surf.WithData(map[string]any{
-		"identity": identity,
-		"item":     itemToDataMap(item),
+		"identity":   identity,
+		"identities": collectIdentities(identity, item),
+		"item":       itemToDataMap(item),
 	})
 	return surf.Messages()
 }
@@ -304,11 +363,35 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		colChildren = append(colChildren, linksRowID)
 	}
 
-	// Build single-card detail Modal (trigger = "Details" button, content = full item detail + comment thread Column).
+	// Build single-card detail Modal (opened by clicking the card; content = full item detail + edit view + comment thread Column).
 	modalTitleID := prefix + "-modal-title"
+	modalHdrRowID := prefix + "-modal-header-row"
 	modalMetaID := prefix + "-modal-meta"
 	modalDivID := prefix + "-modal-divider"
+	modalViewColID := prefix + "-modal-view-col"
+	editTextColID := prefix + "-edit-text-col"
+	editTextLblID := prefix + "-edit-text-label"
+	editTextBtnID := prefix + "-edit-text-btn"
+
 	surf = surf.Add(a2uibuild.Text(modalTitleID, a2ui.StringBinding(dataPath+"/title")))
+	surf = surf.Add(a2uibuild.Text(editTextLblID, a2ui.StringLiteral("✎")))
+	editTextBtn := a2uibuild.Button(editTextBtnID, a2ui.Action{
+		Event: &a2ui.EventAction{
+			Name: "toggle_edit_text",
+			Context: map[string]a2ui.DynamicValue{
+				"id":          a2ui.ValueString(it.ID),
+				"target":      a2ui.ValueString(editTextColID),
+				"view_target": a2ui.ValueString(modalViewColID),
+			},
+		},
+	}, editTextLblID)
+	editTextBtn.Button.Variant = a2ui.ButtonVariantBorderless
+	surf = surf.Add(editTextBtn)
+
+	modalHdrRow := a2uibuild.Row(modalHdrRowID, a2uibuild.Children(modalTitleID, editTextBtnID))
+	modalHdrRow.Row.Align = a2ui.LayoutAlignCenter
+	surf = surf.Add(modalHdrRow)
+
 	modalMetaStr := fmt.Sprintf("ID: %s • %s • status: %s • owner: %s",
 		it.ID, it.Queue, it.Status, it.Owner)
 	if it.Assignee != "" {
@@ -320,7 +403,7 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 	surf = surf.Add(modalMetaComp)
 	surf = surf.Add(a2uibuild.Divider(modalDivID))
 
-	modalChildren := []string{modalTitleID, modalMetaID, modalDivID}
+	viewChildren := []string{modalMetaID, modalDivID}
 	if it.Text != "" {
 		modalTextID := prefix + "-modal-text"
 		modalTextComp := a2uibuild.Text(modalTextID, a2ui.StringBinding(dataPath+"/text"))
@@ -330,53 +413,8 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 			},
 		}
 		surf = surf.Add(modalTextComp)
-		modalChildren = append(modalChildren, modalTextID)
+		viewChildren = append(viewChildren, modalTextID)
 	}
-
-	editTextColID := prefix + "-edit-text-col"
-	editTextLblID := prefix + "-edit-text-label"
-	editTextBtnID := prefix + "-edit-text-btn"
-	surf = surf.Add(a2uibuild.Text(editTextLblID, a2ui.StringLiteral("Edit Text")))
-	editTextBtn := a2uibuild.Button(editTextBtnID, a2ui.Action{
-		Event: &a2ui.EventAction{
-			Name: "toggle_edit_text",
-			Context: map[string]a2ui.DynamicValue{
-				"id":     a2ui.ValueString(it.ID),
-				"target": a2ui.ValueString(editTextColID),
-			},
-		},
-	}, editTextLblID)
-	surf = surf.Add(editTextBtn)
-
-	editTextInputID := prefix + "-edit-text-input"
-	editTextField := a2uibuild.TextField(editTextInputID, a2ui.StringLiteral("Edit item text (Markdown supported)"))
-	editTextField.TextField.Value = new(a2ui.StringBinding(dataPath + "/text"))
-	editTextField.TextField.Placeholder = new(a2ui.StringLiteral("Item description..."))
-	editTextField.TextField.Variant = a2ui.TextFieldVariantLongText
-	surf = surf.Add(editTextField)
-
-	saveTextLblID := prefix + "-edit-text-save-label"
-	saveTextBtnID := prefix + "-edit-text-save-btn"
-	surf = surf.Add(a2uibuild.Text(saveTextLblID, a2ui.StringLiteral("Save Text")))
-	editCtx := upsertContextForItem(identity, it, it.Status, it.Queue)
-	editCtx["text"] = a2ui.ValueBinding(dataPath + "/text")
-	saveTextBtn := a2uibuild.Button(saveTextBtnID, a2ui.Action{
-		Event: &a2ui.EventAction{
-			Name:    "upsert_item",
-			Context: editCtx,
-		},
-	}, saveTextLblID)
-	saveTextBtn.Button.Variant = a2ui.ButtonVariantPrimary
-	surf = surf.Add(saveTextBtn)
-
-	editTextCol := a2uibuild.Column(editTextColID, a2uibuild.Children(editTextInputID, saveTextBtnID))
-	editTextCol.Metadata = &a2ui.Metadata{
-		Extensions: map[string]any{
-			"qmcp_collapsible_box": true,
-		},
-	}
-	surf = surf.Add(editTextCol)
-	modalChildren = append(modalChildren, editTextBtnID, editTextColID)
 	if len(it.Data) > 0 {
 		if rawData, err := json.MarshalIndent(it.Data, "", "  "); err == nil {
 			modalDataID := prefix + "-modal-data"
@@ -388,7 +426,7 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 				},
 			}
 			surf = surf.Add(modalDataComp)
-			modalChildren = append(modalChildren, modalDataID)
+			viewChildren = append(viewChildren, modalDataID)
 		}
 	}
 	if len(it.Links) > 0 {
@@ -403,8 +441,81 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		}
 		modalLinksRowID := prefix + "-modal-links"
 		surf = surf.Add(a2uibuild.Row(modalLinksRowID, a2uibuild.Children(modalLinkBtnIDs...)))
-		modalChildren = append(modalChildren, modalLinksRowID)
+		viewChildren = append(viewChildren, modalLinksRowID)
 	}
+	surf = surf.Add(a2uibuild.Column(modalViewColID, a2uibuild.Children(viewChildren...)))
+
+	// Edit Item view inside the Modal (queue, status, assignee, text)
+	editQueueID := prefix + "-edit-queue-input"
+	queuePicker := a2uibuild.ChoicePicker(editQueueID, []a2ui.ChoiceOption{
+		{Label: a2ui.StringLiteral("Inbox"), Value: string(queue.QueueInbox)},
+		{Label: a2ui.StringLiteral("Outbox"), Value: string(queue.QueueOutbox)},
+		{Label: a2ui.StringLiteral("Needs Attention"), Value: string(queue.QueueNeedsAttention)},
+		{Label: a2ui.StringLiteral("Archive"), Value: string(queue.QueueArchive)},
+	}, a2ui.StringListBinding(dataPath+"/queue_list"))
+	queuePicker.ChoicePicker.Label = new(a2ui.StringLiteral("Queue"))
+	queuePicker.ChoicePicker.Variant = a2ui.ChoicePickerVariantMutuallyExclusive
+	surf = surf.Add(queuePicker)
+
+	editStatusID := prefix + "-edit-status-input"
+	statusPicker := a2uibuild.ChoicePicker(editStatusID, []a2ui.ChoiceOption{
+		{Label: a2ui.StringLiteral("open"), Value: string(queue.StatusOpen)},
+		{Label: a2ui.StringLiteral("in_progress"), Value: string(queue.StatusInProgress)},
+		{Label: a2ui.StringLiteral("blocked"), Value: string(queue.StatusBlocked)},
+		{Label: a2ui.StringLiteral("done"), Value: string(queue.StatusDone)},
+		{Label: a2ui.StringLiteral("cancelled"), Value: string(queue.StatusCancelled)},
+	}, a2ui.StringListBinding(dataPath+"/status_list"))
+	statusPicker.ChoicePicker.Label = new(a2ui.StringLiteral("Status"))
+	statusPicker.ChoicePicker.Variant = a2ui.ChoicePickerVariantMutuallyExclusive
+	surf = surf.Add(statusPicker)
+
+	editAssigneeID := prefix + "-edit-assignee-input"
+	assigneeField := a2uibuild.TextField(editAssigneeID, a2ui.StringLiteral("Assignee"))
+	assigneeField.TextField.Value = new(a2ui.StringBinding(dataPath + "/assignee"))
+	assigneeField.TextField.Placeholder = new(a2ui.StringLiteral("Assignee identity..."))
+	assigneeField.Metadata = &a2ui.Metadata{
+		Extensions: map[string]any{
+			"qmcp_autocomplete": "identities",
+		},
+	}
+	surf = surf.Add(assigneeField)
+
+	editMetaRowID := prefix + "-edit-meta-row"
+	surf = surf.Add(a2uibuild.Row(editMetaRowID, a2uibuild.Children(editQueueID, editStatusID, editAssigneeID)))
+
+	editTextInputID := prefix + "-edit-text-input"
+	editTextField := a2uibuild.TextField(editTextInputID, a2ui.StringLiteral("Description (Markdown supported)"))
+	editTextField.TextField.Value = new(a2ui.StringBinding(dataPath + "/text"))
+	editTextField.TextField.Placeholder = new(a2ui.StringLiteral("Item description..."))
+	editTextField.TextField.Variant = a2ui.TextFieldVariantLongText
+	surf = surf.Add(editTextField)
+
+	saveTextLblID := prefix + "-edit-text-save-label"
+	saveTextBtnID := prefix + "-edit-text-save-btn"
+	surf = surf.Add(a2uibuild.Text(saveTextLblID, a2ui.StringLiteral("Save Changes")))
+	editCtx := upsertContextForItem(identity, it, it.Status, it.Queue)
+	editCtx["queue"] = a2ui.ValueBinding(dataPath + "/queue")
+	editCtx["status"] = a2ui.ValueBinding(dataPath + "/status")
+	editCtx["assignee"] = a2ui.ValueBinding(dataPath + "/assignee")
+	editCtx["text"] = a2ui.ValueBinding(dataPath + "/text")
+	saveTextBtn := a2uibuild.Button(saveTextBtnID, a2ui.Action{
+		Event: &a2ui.EventAction{
+			Name:    "upsert_item",
+			Context: editCtx,
+		},
+	}, saveTextLblID)
+	saveTextBtn.Button.Variant = a2ui.ButtonVariantPrimary
+	surf = surf.Add(saveTextBtn)
+
+	editTextCol := a2uibuild.Column(editTextColID, a2uibuild.Children(editMetaRowID, editTextInputID, saveTextBtnID))
+	editTextCol.Metadata = &a2ui.Metadata{
+		Extensions: map[string]any{
+			"qmcp_collapsible_box": true,
+		},
+	}
+	surf = surf.Add(editTextCol)
+
+	modalChildren := []string{modalHdrRowID, modalViewColID, editTextColID}
 
 	// Comment thread section inside the Modal
 	commentsDivID := prefix + "-comments-divider"
@@ -481,12 +592,14 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 	modalComp := a2uibuild.Modal(modalID, modalContentID, detailBtnID)
 	modalComp.Metadata = &a2ui.Metadata{
 		Extensions: map[string]any{
-			"qmcp_item_id": it.ID,
+			"qmcp_item_id":      it.ID,
+			"qmcp_hide_trigger": true,
 		},
 	}
 	surf = surf.Add(modalComp)
+	colChildren = append(colChildren, modalID)
 
-	actionBtnIDs := []string{modalID}
+	var actionBtnIDs []string
 
 	if !queue.IsTerminalStatus(it.Status) {
 		if it.Status != queue.StatusInProgress {
@@ -530,7 +643,7 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 		doneLblID := prefix + "-done-label"
 		doneBtnID := prefix + "-done-btn"
-		surf = surf.Add(a2uibuild.Text(doneLblID, a2ui.StringLiteral("Mark Done")))
+		surf = surf.Add(a2uibuild.Text(doneLblID, a2ui.StringLiteral("📦 Archive")))
 		surf = surf.Add(a2uibuild.Button(doneBtnID, a2ui.Action{
 			Event: &a2ui.EventAction{
 				Name:    "upsert_item",
@@ -585,7 +698,9 @@ func itemToDataMap(it queue.Item) map[string]any {
 		"id":            it.ID,
 		"title":         it.Title,
 		"status":        string(it.Status),
+		"status_list":   []string{string(it.Status)},
 		"queue":         string(it.Queue),
+		"queue_list":    []string{string(it.Queue)},
 		"position":      it.Position,
 		"owner":         it.Owner,
 		"assignee":      it.Assignee,
