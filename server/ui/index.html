@@ -436,26 +436,12 @@
         <input type="text" id="form-title" required placeholder="Task summary..." />
       </label>
       <label class="form-field">
-        Item ID (optional, for replace)
-        <input type="text" id="form-id" placeholder="Leave blank to insert" />
-      </label>
-      <label class="form-field">
         Queue
         <select id="form-queue">
           <option value="Inbox">Inbox</option>
           <option value="Outbox">Outbox</option>
           <option value="Needs Attention">Needs Attention</option>
           <option value="Archive">Archive</option>
-        </select>
-      </label>
-      <label class="form-field">
-        Status
-        <select id="form-status">
-          <option value="open">open</option>
-          <option value="in_progress">in_progress</option>
-          <option value="blocked">blocked</option>
-          <option value="done">done (auto-archives)</option>
-          <option value="cancelled">cancelled (auto-archives)</option>
         </select>
       </label>
       <label class="form-field">
@@ -479,7 +465,7 @@
     </div>
     <div class="toolbar-group" style="justify-content:flex-end;">
       <button type="button" id="cancel-form-btn">Cancel</button>
-      <button type="submit" class="primary">Save Item</button>
+      <button type="submit" class="primary">Create Item</button>
     </div>
   </form>
 
@@ -1287,10 +1273,8 @@
     const links = linksRaw ? linksRaw.split(",").map(s => s.trim()).filter(Boolean) : [];
     const args = {
       identity,
-      id: document.getElementById("form-id").value.trim(),
       title: document.getElementById("form-title").value.trim(),
       queue: document.getElementById("form-queue").value,
-      status: document.getElementById("form-status").value,
       owner: document.getElementById("form-owner").value.trim(),
       assignee: document.getElementById("form-assignee").value.trim(),
       text: document.getElementById("form-text").value.trim(),
