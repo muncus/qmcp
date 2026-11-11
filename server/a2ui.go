@@ -141,22 +141,11 @@ func BuildQueuesSummarySurface(identity string, queues []queue.QueueSummary, ite
 		laneCardID := p + "-card"
 
 		surf = surf.Add(a2uibuild.Text(nameID, a2ui.StringBinding(fmt.Sprintf("/queues/%d/name", i))))
-		countsComp := a2uibuild.Text(countsID, a2ui.StringLiteral(fmt.Sprintf("%d mine • %d total", q.CallerCount, q.TotalCount)))
-		countsComp.Text.Variant = a2ui.TextVariantCaption
-		surf = surf.Add(countsComp)
-
-		surf = surf.Add(a2uibuild.Text(btnLabelID, a2ui.StringLiteral("Focus")))
-		openBtn := a2uibuild.Button(btnID, a2ui.Action{
-			Event: &a2ui.EventAction{
-				Name: "get_queue",
-				Context: map[string]a2ui.DynamicValue{
-					"identity": a2ui.ValueString(identity),
-					"queue":    a2ui.ValueString(string(q.Name)),
-				},
-			},
-		}, btnLabelID)
-		openBtn.Button.Variant = a2ui.ButtonVariantBorderless
-		surf = surf.Add(openBtn)
+		surf = addCaptionText(surf, countsID, fmt.Sprintf("%d mine • %d total", q.CallerCount, q.TotalCount))
+		surf = addActionBtn(surf, btnID, btnLabelID, "Focus", a2ui.ButtonVariantBorderless, "get_queue", map[string]a2ui.DynamicValue{
+			"identity": a2ui.ValueString(identity),
+			"queue":    a2ui.ValueString(string(q.Name)),
+		})
 
 		hdrRow := a2uibuild.Row(hdrRowID, a2uibuild.Children(nameID, countsID, btnID))
 		hdrRow.Row.Align = a2ui.LayoutAlignCenter
@@ -169,9 +158,7 @@ func BuildQueuesSummarySurface(identity string, queues []queue.QueueSummary, ite
 
 		if len(qItems) == 0 {
 			emptyID := p + "-empty"
-			emptyComp := a2uibuild.Text(emptyID, a2ui.StringLiteral("Empty — drag an item here"))
-			emptyComp.Text.Variant = a2ui.TextVariantCaption
-			surf = surf.Add(emptyComp)
+			surf = addCaptionText(surf, emptyID, "Empty — drag an item here")
 			itemCardIDs = append(itemCardIDs, emptyID)
 		} else {
 			for j, it := range qItems {
@@ -317,6 +304,49 @@ func upsertContextForItem(identity string, it queue.Item, status queue.Status, t
 	return ctx
 }
 
+func addCaptionText(surf a2uibuild.Surface, id, text string) a2uibuild.Surface {
+	comp := a2uibuild.Text(id, a2ui.StringLiteral(text))
+	comp.Text.Variant = a2ui.TextVariantCaption
+	return surf.Add(comp)
+}
+
+func addMarkdownText(surf a2uibuild.Surface, id string, text a2ui.DynamicString, rawMarkdown string) a2uibuild.Surface {
+	comp := a2uibuild.Text(id, text)
+	comp.Metadata = &a2ui.Metadata{
+		Extensions: map[string]any{
+			"qmcp_html": renderMarkdownHTML(rawMarkdown),
+		},
+	}
+	return surf.Add(comp)
+}
+
+func addActionBtn(surf a2uibuild.Surface, btnID, lblID, label string, variant a2ui.ButtonVariant, eventName string, ctx map[string]a2ui.DynamicValue) a2uibuild.Surface {
+	surf = surf.Add(a2uibuild.Text(lblID, a2ui.StringLiteral(label)))
+	btn := a2uibuild.Button(btnID, a2ui.Action{
+		Event: &a2ui.EventAction{
+			Name:    eventName,
+			Context: ctx,
+		},
+	}, lblID)
+	if variant != "" {
+		btn.Button.Variant = variant
+	}
+	return surf.Add(btn)
+}
+
+func addLinksRow(surf a2uibuild.Surface, rowID, prefix string, links []string) a2uibuild.Surface {
+	btnIDs := make([]string, 0, len(links))
+	for i, link := range links {
+		lp := fmt.Sprintf("%s-%d", prefix, i)
+		lblID := lp + "-label"
+		btnID := lp + "-btn"
+		surf = surf.Add(a2uibuild.Text(lblID, a2ui.StringLiteral(link)))
+		surf = surf.Add(a2uibuild.Button(btnID, a2ui.OpenURL(a2ui.StringLiteral(link)), lblID))
+		btnIDs = append(btnIDs, btnID)
+	}
+	return surf.Add(a2uibuild.Row(rowID, a2uibuild.Children(btnIDs...)))
+}
+
 func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dataPath string, it queue.Item) a2uibuild.Surface {
 	titleID := prefix + "-title"
 	metaID := prefix + "-meta"
@@ -329,38 +359,20 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 	if len(it.Comments) > 0 {
 		metaStr += fmt.Sprintf(" • 💬 %d", len(it.Comments))
 	}
-	metaComp := a2uibuild.Text(metaID, a2ui.StringLiteral(metaStr))
-	metaComp.Text.Variant = a2ui.TextVariantCaption
-	surf = surf.Add(metaComp)
+	surf = addCaptionText(surf, metaID, metaStr)
 
 	modalID := prefix + "-detail-modal"
 	colChildren := []string{modalID, metaID}
 
 	if summary := cardSummaryText(it); summary != "" {
 		textID := prefix + "-text"
-		preview := truncateCardText(summary)
-		textComp := a2uibuild.Text(textID, a2ui.StringBinding(dataPath+"/text_preview"))
-		textComp.Metadata = &a2ui.Metadata{
-			Extensions: map[string]any{
-				"qmcp_html": renderMarkdownHTML(preview),
-			},
-		}
-		surf = surf.Add(textComp)
+		surf = addMarkdownText(surf, textID, a2ui.StringBinding(dataPath+"/text_preview"), truncateCardText(summary))
 		colChildren = append(colChildren, textID)
 	}
 
 	if len(it.Links) > 0 {
-		linkBtnIDs := make([]string, 0, len(it.Links))
-		for li, link := range it.Links {
-			lp := fmt.Sprintf("%s-link-%d", prefix, li)
-			lblID := lp + "-label"
-			btnID := lp + "-btn"
-			surf = surf.Add(a2uibuild.Text(lblID, a2ui.StringLiteral(link)))
-			surf = surf.Add(a2uibuild.Button(btnID, a2ui.OpenURL(a2ui.StringLiteral(link)), lblID))
-			linkBtnIDs = append(linkBtnIDs, btnID)
-		}
 		linksRowID := prefix + "-links"
-		surf = surf.Add(a2uibuild.Row(linksRowID, a2uibuild.Children(linkBtnIDs...)))
+		surf = addLinksRow(surf, linksRowID, prefix+"-link", it.Links)
 		colChildren = append(colChildren, linksRowID)
 	}
 
@@ -380,49 +392,25 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		modalMetaStr += fmt.Sprintf(" • assignee: %s", it.Assignee)
 	}
 	modalMetaStr += fmt.Sprintf(" • updated: %s", it.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"))
-	modalMetaComp := a2uibuild.Text(modalMetaID, a2ui.StringLiteral(modalMetaStr))
-	modalMetaComp.Text.Variant = a2ui.TextVariantCaption
-	surf = surf.Add(modalMetaComp)
+	surf = addCaptionText(surf, modalMetaID, modalMetaStr)
 	surf = surf.Add(a2uibuild.Divider(modalDivID))
 
 	viewChildren := []string{modalMetaID, modalDivID}
 	if it.Text != "" {
 		modalTextID := prefix + "-modal-text"
-		modalTextComp := a2uibuild.Text(modalTextID, a2ui.StringBinding(dataPath+"/text"))
-		modalTextComp.Metadata = &a2ui.Metadata{
-			Extensions: map[string]any{
-				"qmcp_html": renderMarkdownHTML(it.Text),
-			},
-		}
-		surf = surf.Add(modalTextComp)
+		surf = addMarkdownText(surf, modalTextID, a2ui.StringBinding(dataPath+"/text"), it.Text)
 		viewChildren = append(viewChildren, modalTextID)
 	}
 	if len(it.Data) > 0 {
 		if rawData, err := json.MarshalIndent(it.Data, "", "  "); err == nil {
 			modalDataID := prefix + "-modal-data"
-			mdBlock := "```json\n" + string(rawData) + "\n```"
-			modalDataComp := a2uibuild.Text(modalDataID, a2ui.StringLiteral(string(rawData)))
-			modalDataComp.Metadata = &a2ui.Metadata{
-				Extensions: map[string]any{
-					"qmcp_html": renderMarkdownHTML(mdBlock),
-				},
-			}
-			surf = surf.Add(modalDataComp)
+			surf = addMarkdownText(surf, modalDataID, a2ui.StringLiteral(string(rawData)), "```json\n"+string(rawData)+"\n```")
 			viewChildren = append(viewChildren, modalDataID)
 		}
 	}
 	if len(it.Links) > 0 {
-		modalLinkBtnIDs := make([]string, 0, len(it.Links))
-		for li, link := range it.Links {
-			lp := fmt.Sprintf("%s-modal-link-%d", prefix, li)
-			lblID := lp + "-label"
-			btnID := lp + "-btn"
-			surf = surf.Add(a2uibuild.Text(lblID, a2ui.StringLiteral(link)))
-			surf = surf.Add(a2uibuild.Button(btnID, a2ui.OpenURL(a2ui.StringLiteral(link)), lblID))
-			modalLinkBtnIDs = append(modalLinkBtnIDs, btnID)
-		}
 		modalLinksRowID := prefix + "-modal-links"
-		surf = surf.Add(a2uibuild.Row(modalLinksRowID, a2uibuild.Children(modalLinkBtnIDs...)))
+		surf = addLinksRow(surf, modalLinksRowID, prefix+"-modal-link", it.Links)
 		viewChildren = append(viewChildren, modalLinksRowID)
 	}
 	surf = surf.Add(a2uibuild.Column(modalViewColID, a2uibuild.Children(viewChildren...)))
@@ -474,20 +462,12 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 	saveTextLblID := prefix + "-edit-text-save-label"
 	saveTextBtnID := prefix + "-edit-text-save-btn"
-	surf = surf.Add(a2uibuild.Text(saveTextLblID, a2ui.StringLiteral("Save Changes")))
 	editCtx := upsertContextForItem(identity, it, it.Status, it.Queue)
 	editCtx["queue"] = a2ui.ValueBinding(dataPath + "/queue")
 	editCtx["status"] = a2ui.ValueBinding(dataPath + "/status")
 	editCtx["assignee"] = a2ui.ValueBinding(dataPath + "/assignee")
 	editCtx["text"] = a2ui.ValueBinding(dataPath + "/text")
-	saveTextBtn := a2uibuild.Button(saveTextBtnID, a2ui.Action{
-		Event: &a2ui.EventAction{
-			Name:    "upsert_item",
-			Context: editCtx,
-		},
-	}, saveTextLblID)
-	saveTextBtn.Button.Variant = a2ui.ButtonVariantPrimary
-	surf = surf.Add(saveTextBtn)
+	surf = addActionBtn(surf, saveTextBtnID, saveTextLblID, "Save Changes", a2ui.ButtonVariantPrimary, "upsert_item", editCtx)
 
 	surf = surf.Add(a2uibuild.Column(editTextColID, a2uibuild.Children(editMetaRowID, editTextInputID, saveTextBtnID)))
 
@@ -512,19 +492,8 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		cColID := cp + "-col"
 		cCardID := cp + "-card"
 
-		cMetaComp := a2uibuild.Text(cMetaID, a2ui.StringLiteral(
-			fmt.Sprintf("%s • %s", c.Author, c.CreatedAt.Format("2006-01-02T15:04:05Z07:00")),
-		))
-		cMetaComp.Text.Variant = a2ui.TextVariantCaption
-		surf = surf.Add(cMetaComp)
-
-		cTextComp := a2uibuild.Text(cTextID, a2ui.StringLiteral(c.Text))
-		cTextComp.Metadata = &a2ui.Metadata{
-			Extensions: map[string]any{
-				"qmcp_html": renderMarkdownHTML(c.Text),
-			},
-		}
-		surf = surf.Add(cTextComp)
+		surf = addCaptionText(surf, cMetaID, fmt.Sprintf("%s • %s", c.Author, c.CreatedAt.Format("2006-01-02T15:04:05Z07:00")))
+		surf = addMarkdownText(surf, cTextID, a2ui.StringLiteral(c.Text), c.Text)
 		surf = surf.Add(a2uibuild.Column(cColID, a2uibuild.Children(cMetaID, cTextID)))
 		surf = surf.Add(a2uibuild.Card(cCardID, cColID))
 		modalChildren = append(modalChildren, cCardID)
@@ -539,19 +508,11 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 	postCommentLblID := prefix + "-comment-post-label"
 	postCommentBtnID := prefix + "-comment-post-btn"
-	surf = surf.Add(a2uibuild.Text(postCommentLblID, a2ui.StringLiteral("Post Comment")))
-	postCommentBtn := a2uibuild.Button(postCommentBtnID, a2ui.Action{
-		Event: &a2ui.EventAction{
-			Name: "add_comment",
-			Context: map[string]a2ui.DynamicValue{
-				"identity": a2ui.ValueString(identity),
-				"id":       a2ui.ValueString(it.ID),
-				"text":     a2ui.ValueBinding(dataPath + "/draft_comment"),
-			},
-		},
-	}, postCommentLblID)
-	postCommentBtn.Button.Variant = a2ui.ButtonVariantPrimary
-	surf = surf.Add(postCommentBtn)
+	surf = addActionBtn(surf, postCommentBtnID, postCommentLblID, "Post Comment", a2ui.ButtonVariantPrimary, "add_comment", map[string]a2ui.DynamicValue{
+		"identity": a2ui.ValueString(identity),
+		"id":       a2ui.ValueString(it.ID),
+		"text":     a2ui.ValueBinding(dataPath + "/draft_comment"),
+	})
 
 	modalChildren = append(modalChildren, commentInputID, postCommentBtnID)
 
@@ -570,41 +531,20 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 
 	if !queue.IsTerminalStatus(it.Status) {
 		if it.Status != queue.StatusInProgress {
-			progLblID := prefix + "-prog-label"
 			progBtnID := prefix + "-prog-btn"
-			surf = surf.Add(a2uibuild.Text(progLblID, a2ui.StringLiteral("In Progress")))
-			surf = surf.Add(a2uibuild.Button(progBtnID, a2ui.Action{
-				Event: &a2ui.EventAction{
-					Name:    "upsert_item",
-					Context: upsertContextForItem(identity, it, queue.StatusInProgress, it.Queue),
-				},
-			}, progLblID))
+			surf = addActionBtn(surf, progBtnID, prefix+"-prog-label", "In Progress", "", "upsert_item", upsertContextForItem(identity, it, queue.StatusInProgress, it.Queue))
 			actionBtnIDs = append(actionBtnIDs, progBtnID)
 		}
 
 		if it.Status != queue.StatusBlocked {
-			blkLblID := prefix + "-blk-label"
 			blkBtnID := prefix + "-blk-btn"
-			surf = surf.Add(a2uibuild.Text(blkLblID, a2ui.StringLiteral("Block")))
-			surf = surf.Add(a2uibuild.Button(blkBtnID, a2ui.Action{
-				Event: &a2ui.EventAction{
-					Name:    "upsert_item",
-					Context: upsertContextForItem(identity, it, queue.StatusBlocked, it.Queue),
-				},
-			}, blkLblID))
+			surf = addActionBtn(surf, blkBtnID, prefix+"-blk-label", "Block", "", "upsert_item", upsertContextForItem(identity, it, queue.StatusBlocked, it.Queue))
 			actionBtnIDs = append(actionBtnIDs, blkBtnID)
 		}
 
 		if it.Queue != queue.QueueNeedsAttention {
-			attnLblID := prefix + "-attn-label"
 			attnBtnID := prefix + "-attn-btn"
-			surf = surf.Add(a2uibuild.Text(attnLblID, a2ui.StringLiteral("Needs Attention")))
-			surf = surf.Add(a2uibuild.Button(attnBtnID, a2ui.Action{
-				Event: &a2ui.EventAction{
-					Name:    "upsert_item",
-					Context: upsertContextForItem(identity, it, it.Status, queue.QueueNeedsAttention),
-				},
-			}, attnLblID))
+			surf = addActionBtn(surf, attnBtnID, prefix+"-attn-label", "Needs Attention", "", "upsert_item", upsertContextForItem(identity, it, it.Status, queue.QueueNeedsAttention))
 			actionBtnIDs = append(actionBtnIDs, attnBtnID)
 		}
 
@@ -623,15 +563,8 @@ func addItemCardComponents(surf a2uibuild.Surface, identity, prefix, cardID, dat
 		}, doneRowID))
 		actionBtnIDs = append(actionBtnIDs, doneBtnID)
 	} else {
-		reopenLblID := prefix + "-reopen-label"
 		reopenBtnID := prefix + "-reopen-btn"
-		surf = surf.Add(a2uibuild.Text(reopenLblID, a2ui.StringLiteral("Reopen to Inbox")))
-		surf = surf.Add(a2uibuild.Button(reopenBtnID, a2ui.Action{
-			Event: &a2ui.EventAction{
-				Name:    "upsert_item",
-				Context: upsertContextForItem(identity, it, queue.StatusOpen, queue.QueueInbox),
-			},
-		}, reopenLblID))
+		surf = addActionBtn(surf, reopenBtnID, prefix+"-reopen-label", "Reopen to Inbox", "", "upsert_item", upsertContextForItem(identity, it, queue.StatusOpen, queue.QueueInbox))
 		actionBtnIDs = append(actionBtnIDs, reopenBtnID)
 	}
 
