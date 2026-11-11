@@ -16,9 +16,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/muncus/qmcp/queue"
+	"github.com/tmc/a2ui"
 )
 
 // ListQueuesInput defines the input arguments for the list_queues tool.
@@ -100,89 +103,122 @@ func New(store queue.Store) *mcp.Server {
 
 	registerMCPAppResource(srv)
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "list_queues",
-		Description: "List all queues along with total item counts and caller-owned item counts, and render a Kanban board A2UI surface.",
-		Meta:        mcpAppToolMeta(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ListQueuesInput) (*mcp.CallToolResult, ListQueuesOutput, error) {
-		queues, err := store.ListQueues(ctx, in.Identity)
-		if err != nil {
-			return nil, ListQueuesOutput{}, err
-		}
-		itemsByQueue, err := loadItemsByQueue(ctx, store, in.Identity, in.AllOwners, queues)
-		if err != nil {
-			return nil, ListQueuesOutput{}, err
-		}
-		out := ListQueuesOutput{Queues: queues}
-		msgs := BuildQueuesSummarySurface(in.Identity, queues, itemsByQueue)
-		return toolResultWithA2UI("a2ui://qmcp/queues", out, msgs)
-	})
+	addA2UITool(srv, store, "list_queues",
+		"List all queues along with total item counts and caller-owned item counts, and render a Kanban board A2UI surface.",
+		"a2ui://qmcp/queues", execListQueues)
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "get_queue",
-		Description: "Get items in a queue ordered by 1-indexed position ascending. Filters by owner == identity by default unless owner or all_owners is specified.",
-		Meta:        mcpAppToolMeta(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GetQueueInput) (*mcp.CallToolResult, GetQueueOutput, error) {
-		items, err := store.GetQueue(ctx, queue.GetQueueOptions{
-			Identity:  in.Identity,
-			Queue:     in.Queue,
-			Owner:     in.Owner,
-			Assignee:  in.Assignee,
-			AllOwners: in.AllOwners,
-			Status:    in.Status,
-			Limit:     in.Limit,
-			Offset:    in.Offset,
-		})
-		if err != nil {
-			return nil, GetQueueOutput{}, err
-		}
-		out := GetQueueOutput{
-			Queue: in.Queue,
-			Items: items,
-		}
-		msgs := BuildQueueSurface(in.Identity, in.Queue, items)
-		return toolResultWithA2UI("a2ui://qmcp/queue", out, msgs)
-	})
+	addA2UITool(srv, store, "get_queue",
+		"Get items in a queue ordered by 1-indexed position ascending. Filters by owner == identity by default unless owner or all_owners is specified.",
+		"a2ui://qmcp/queue", execGetQueue)
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "upsert_item",
-		Description: "Insert a new queue item (if id is omitted) or replace an existing item (if id is provided). Setting status to done or cancelled automatically moves the item to Archive.",
-		Meta:        mcpAppToolMeta(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in UpsertItemInput) (*mcp.CallToolResult, UpsertItemOutput, error) {
-		item, err := store.UpsertItem(ctx, in.Identity, queue.Item{
-			ID:       in.ID,
-			Title:    in.Title,
-			Queue:    in.Queue,
-			Status:   in.Status,
-			Position: in.Position,
-			Text:     in.Text,
-			Comments: in.Comments,
-			Data:     in.Data,
-			Links:    in.Links,
-			Owner:    in.Owner,
-			Assignee: in.Assignee,
-		})
-		if err != nil {
-			return nil, UpsertItemOutput{}, err
-		}
-		out := UpsertItemOutput{Item: item}
-		msgs := BuildItemSurface(in.Identity, item)
-		return toolResultWithA2UI("a2ui://qmcp/item", out, msgs)
-	})
+	addA2UITool(srv, store, "upsert_item",
+		"Insert a new queue item (if id is omitted) or replace an existing item (if id is provided). Setting status to done or cancelled automatically moves the item to Archive.",
+		"a2ui://qmcp/item", execUpsertItem)
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "add_comment",
-		Description: "Append a comment to an existing queue item's comment thread.",
-		Meta:        mcpAppToolMeta(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in AddCommentInput) (*mcp.CallToolResult, AddCommentOutput, error) {
-		item, err := store.AddComment(ctx, in.Identity, in.ID, in.Text)
-		if err != nil {
-			return nil, AddCommentOutput{}, err
-		}
-		out := AddCommentOutput{Item: item}
-		msgs := BuildItemSurface(in.Identity, item)
-		return toolResultWithA2UI("a2ui://qmcp/item", out, msgs)
-	})
+	addA2UITool(srv, store, "add_comment",
+		"Append a comment to an existing queue item's comment thread.",
+		"a2ui://qmcp/item", execAddComment)
 
 	return srv
+}
+
+type toolFunc[In, Out any] func(ctx context.Context, store queue.Store, in In) (Out, []a2ui.AgentMessage, error)
+
+func addA2UITool[In, Out any](srv *mcp.Server, store queue.Store, name, desc, uri string, fn toolFunc[In, Out]) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        name,
+		Description: desc,
+		Meta:        mcpAppToolMeta(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		out, msgs, err := fn(ctx, store, in)
+		if err != nil {
+			var zero Out
+			return nil, zero, err
+		}
+		return toolResultWithA2UI(uri, out, msgs)
+	})
+}
+
+func callToolJSON[In, Out any](ctx context.Context, store queue.Store, raw json.RawMessage, fn toolFunc[In, Out]) (any, []a2ui.AgentMessage, error) {
+	var in In
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, nil, err
+	}
+	return fn(ctx, store, in)
+}
+
+func dispatchTool(ctx context.Context, store queue.Store, name string, raw json.RawMessage) (any, []a2ui.AgentMessage, error) {
+	switch name {
+	case "list_queues":
+		return callToolJSON(ctx, store, raw, execListQueues)
+	case "get_queue":
+		return callToolJSON(ctx, store, raw, execGetQueue)
+	case "upsert_item":
+		return callToolJSON(ctx, store, raw, execUpsertItem)
+	case "add_comment":
+		return callToolJSON(ctx, store, raw, execAddComment)
+	default:
+		return nil, nil, fmt.Errorf("unknown tool %q", name)
+	}
+}
+
+func execListQueues(ctx context.Context, store queue.Store, in ListQueuesInput) (ListQueuesOutput, []a2ui.AgentMessage, error) {
+	queues, err := store.ListQueues(ctx, in.Identity)
+	if err != nil {
+		return ListQueuesOutput{}, nil, err
+	}
+	itemsByQueue, err := loadItemsByQueue(ctx, store, in.Identity, in.AllOwners, queues)
+	if err != nil {
+		return ListQueuesOutput{}, nil, err
+	}
+	out := ListQueuesOutput{Queues: queues}
+	return out, BuildQueuesSummarySurface(in.Identity, queues, itemsByQueue), nil
+}
+
+func execGetQueue(ctx context.Context, store queue.Store, in GetQueueInput) (GetQueueOutput, []a2ui.AgentMessage, error) {
+	items, err := store.GetQueue(ctx, queue.GetQueueOptions{
+		Identity:  in.Identity,
+		Queue:     in.Queue,
+		Owner:     in.Owner,
+		Assignee:  in.Assignee,
+		AllOwners: in.AllOwners,
+		Status:    in.Status,
+		Limit:     in.Limit,
+		Offset:    in.Offset,
+	})
+	if err != nil {
+		return GetQueueOutput{}, nil, err
+	}
+	out := GetQueueOutput{Queue: in.Queue, Items: items}
+	return out, BuildQueueSurface(in.Identity, in.Queue, items), nil
+}
+
+func execUpsertItem(ctx context.Context, store queue.Store, in UpsertItemInput) (UpsertItemOutput, []a2ui.AgentMessage, error) {
+	item, err := store.UpsertItem(ctx, in.Identity, queue.Item{
+		ID:       in.ID,
+		Title:    in.Title,
+		Queue:    in.Queue,
+		Status:   in.Status,
+		Position: in.Position,
+		Text:     in.Text,
+		Comments: in.Comments,
+		Data:     in.Data,
+		Links:    in.Links,
+		Owner:    in.Owner,
+		Assignee: in.Assignee,
+	})
+	if err != nil {
+		return UpsertItemOutput{}, nil, err
+	}
+	out := UpsertItemOutput{Item: item}
+	return out, BuildItemSurface(in.Identity, item), nil
+}
+
+func execAddComment(ctx context.Context, store queue.Store, in AddCommentInput) (AddCommentOutput, []a2ui.AgentMessage, error) {
+	item, err := store.AddComment(ctx, in.Identity, in.ID, in.Text)
+	if err != nil {
+		return AddCommentOutput{}, nil, err
+	}
+	out := AddCommentOutput{Item: item}
+	return out, BuildItemSurface(in.Identity, item), nil
 }

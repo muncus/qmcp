@@ -311,8 +311,26 @@
     font-size: 1.15rem;
     font-weight: 700;
   }
-  .a2ui-collapsible-hidden {
-    display: none !important;
+  .a2ui-tabs {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .a2ui-tabs-bar {
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid var(--card-border);
+    padding-bottom: 6px;
+  }
+  .a2ui-tab-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  .a2ui-icon {
+    display: inline-flex;
+    align-items: center;
+    line-height: 1;
   }
   .a2ui-markdown p {
     margin: 0 0 6px 0;
@@ -418,26 +436,12 @@
         <input type="text" id="form-title" required placeholder="Task summary..." />
       </label>
       <label class="form-field">
-        Item ID (optional, for replace)
-        <input type="text" id="form-id" placeholder="Leave blank to insert" />
-      </label>
-      <label class="form-field">
         Queue
         <select id="form-queue">
           <option value="Inbox">Inbox</option>
           <option value="Outbox">Outbox</option>
           <option value="Needs Attention">Needs Attention</option>
           <option value="Archive">Archive</option>
-        </select>
-      </label>
-      <label class="form-field">
-        Status
-        <select id="form-status">
-          <option value="open">open</option>
-          <option value="in_progress">in_progress</option>
-          <option value="blocked">blocked</option>
-          <option value="done">done (auto-archives)</option>
-          <option value="cancelled">cancelled (auto-archives)</option>
         </select>
       </label>
       <label class="form-field">
@@ -461,7 +465,7 @@
     </div>
     <div class="toolbar-group" style="justify-content:flex-end;">
       <button type="button" id="cancel-form-btn">Cancel</button>
-      <button type="submit" class="primary">Save Item</button>
+      <button type="submit" class="primary">Create Item</button>
     </div>
   </form>
 
@@ -618,6 +622,24 @@
           }
           break;
         }
+        case "Icon": {
+          el = document.createElement("span");
+          el.className = "a2ui-icon";
+          el.dataset.id = comp.id;
+          const iconMap = {
+            edit: "✎",
+            folder: "📦",
+            delete: "🗑",
+            check: "✓",
+            close: "✕",
+            add: "+",
+            warning: "⚠",
+            info: "ℹ",
+          };
+          const iconName = typeof comp.name === "string" ? comp.name : String(this.resolveDynamic(comp.name));
+          el.textContent = iconMap[iconName] || iconName;
+          break;
+        }
         case "Button": {
           el = document.createElement("button");
           el.type = "button";
@@ -625,17 +647,53 @@
           el.dataset.id = comp.id;
           const child = this.components.get(comp.child);
           if (child) {
-            el.textContent = String(this.resolveDynamic(child.text));
+            if (child.component === "Text") {
+              el.textContent = String(this.resolveDynamic(child.text));
+            } else {
+              el.appendChild(this.renderComponent(child, handlers));
+            }
           } else {
             el.textContent = comp.id;
-          }
-          if (comp.id.endsWith("-edit-text-btn")) {
-            el.title = "Edit item";
           }
           el.addEventListener("click", (e) => {
             e.stopPropagation();
             handlers.onAction(comp.action, this);
           });
+          break;
+        }
+        case "Tabs": {
+          el = document.createElement("div");
+          el.className = "a2ui-tabs";
+          el.dataset.id = comp.id;
+          const tabBar = document.createElement("div");
+          tabBar.className = "a2ui-tabs-bar";
+          const tabBody = document.createElement("div");
+          tabBody.className = "a2ui-tabs-body";
+          const tabs = Array.isArray(comp.tabs) ? comp.tabs : [];
+          const panels = [];
+          const buttons = [];
+          tabs.forEach((tab, idx) => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "a2ui-tab-btn" + (idx === 0 ? " active" : "");
+            btn.textContent = String(this.resolveDynamic(tab.title));
+            const childComp = this.components.get(tab.child);
+            const panel = childComp ? this.renderComponent(childComp, handlers) : document.createElement("div");
+            if (idx !== 0) panel.style.display = "none";
+            btn.addEventListener("click", (e) => {
+              e.stopPropagation();
+              buttons.forEach((b, i) => b.classList.toggle("active", i === idx));
+              panels.forEach((p, i) => {
+                p.style.display = i === idx ? "" : "none";
+              });
+            });
+            buttons.push(btn);
+            panels.push(panel);
+            tabBar.appendChild(btn);
+            tabBody.appendChild(panel);
+          });
+          el.appendChild(tabBar);
+          el.appendChild(tabBody);
           break;
         }
         case "ChoicePicker": {
@@ -738,13 +796,16 @@
               dialog.close();
             }
           });
-          const hideTrigger = comp.metadata && comp.metadata.extensions && comp.metadata.extensions.qmcp_hide_trigger;
-          if (triggerComp && !hideTrigger) {
+          if (triggerComp) {
             const triggerEl = this.renderComponent(triggerComp, {
               ...handlers,
               onAction: () => {
                 dialog.showModal();
               },
+            });
+            triggerEl.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (!dialog.open) dialog.showModal();
             });
             el.appendChild(triggerEl);
           }
@@ -765,9 +826,6 @@
       // Attach A2UI Metadata Extensions for Drag & Drop (`qmcp_draggable` and `qmcp_drop_zone`)
       const ext = comp.metadata && comp.metadata.extensions;
       if (ext) {
-        if (ext.qmcp_collapsible_box) {
-          el.classList.add("a2ui-collapsible-hidden");
-        }
         if (ext.qmcp_draggable) {
           this.attachDraggable(el, ext.qmcp_draggable, handlers);
         }
@@ -1038,25 +1096,6 @@
         setActiveTab(args.queue);
         args.all_owners = allOwnersInput.checked;
       }
-      if (action.event.name === "toggle_edit_text") {
-        if (args.view_target) {
-          const viewEl = viewport.querySelector(`[data-id="${CSS.escape(String(args.view_target))}"]`);
-          if (viewEl) {
-            viewEl.classList.toggle("a2ui-collapsible-hidden");
-          }
-        }
-        if (args.target) {
-          const targetEl = viewport.querySelector(`[data-id="${CSS.escape(String(args.target))}"]`);
-          if (targetEl) {
-            targetEl.classList.toggle("a2ui-collapsible-hidden");
-            if (!targetEl.classList.contains("a2ui-collapsible-hidden")) {
-              const input = targetEl.querySelector("textarea, input, select");
-              if (input) input.focus();
-            }
-          }
-        }
-        return;
-      }
       if (action.event.name === "add_comment") {
         if (!args.text || !String(args.text).trim()) {
           setStatus("Comment text is required");
@@ -1234,10 +1273,8 @@
     const links = linksRaw ? linksRaw.split(",").map(s => s.trim()).filter(Boolean) : [];
     const args = {
       identity,
-      id: document.getElementById("form-id").value.trim(),
       title: document.getElementById("form-title").value.trim(),
       queue: document.getElementById("form-queue").value,
-      status: document.getElementById("form-status").value,
       owner: document.getElementById("form-owner").value.trim(),
       assignee: document.getElementById("form-assignee").value.trim(),
       text: document.getElementById("form-text").value.trim(),

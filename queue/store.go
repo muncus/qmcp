@@ -207,18 +207,7 @@ func (s *JSONLStore) loadLocked() error {
 
 	// Sort each queue by Position ascending (tie-breaking by UpdatedAt, then ID) and normalize 1-indexed positions.
 	for q, list := range s.queues {
-		slices.SortFunc(list, func(a, b Item) int {
-			if a.Position != b.Position {
-				return a.Position - b.Position
-			}
-			if !a.UpdatedAt.Equal(b.UpdatedAt) {
-				if a.UpdatedAt.Before(b.UpdatedAt) {
-					return -1
-				}
-				return 1
-			}
-			return strings.Compare(a.ID, b.ID)
-		})
+		sortItemsByPosition(list)
 		for i := range list {
 			list[i].Position = i + 1
 		}
@@ -315,84 +304,25 @@ func (s *JSONLStore) ListQueues(_ context.Context, identity string) ([]QueueSumm
 
 // GetQueue returns items in a queue matching the specified filters, ordered by position ascending.
 func (s *JSONLStore) GetQueue(_ context.Context, opts GetQueueOptions) ([]Item, error) {
-	opts.Identity = strings.TrimSpace(opts.Identity)
-	if opts.Identity == "" {
-		return nil, errors.New("identity is required")
-	}
-	if err := ValidateQueue(opts.Queue); err != nil {
+	opts, allOwners, err := validateGetQueueOptions(opts)
+	if err != nil {
 		return nil, err
 	}
-	if opts.Status != "" {
-		if err := ValidateStatus(opts.Status); err != nil {
-			return nil, err
-		}
-	}
-	if opts.Offset < 0 {
-		return nil, errors.New("offset must be non-negative")
-	}
-	if opts.Limit < 0 {
-		return nil, errors.New("limit must be non-negative")
-	}
-
-	ownerFilter := strings.TrimSpace(opts.Owner)
-	assigneeFilter := strings.TrimSpace(opts.Assignee)
-	allOwners := opts.AllOwners || ownerFilter == "*"
 
 	s.mu.Lock()
 	s.reloadIfChangedLocked()
 	defer s.mu.Unlock()
 
-	list := s.queues[opts.Queue]
-	matched := make([]Item, 0, len(list))
-	for _, it := range list {
-		if !matchesIdentityFilters(it, opts.Identity, ownerFilter, assigneeFilter, allOwners) {
-			continue
-		}
-		if opts.Status != "" && it.Status != opts.Status {
-			continue
-		}
-		matched = append(matched, it.Clone())
-	}
-
-	if opts.Offset >= len(matched) {
-		return []Item{}, nil
-	}
-	matched = matched[opts.Offset:]
-	if opts.Limit > 0 && opts.Limit < len(matched) {
-		matched = matched[:opts.Limit]
-	}
-	return matched, nil
+	return filterAndPaginateItems(s.queues[opts.Queue], opts, allOwners), nil
 }
 
 // UpsertItem creates a new item if item.ID is empty, or replaces an existing item if item.ID is set.
 func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (Item, error) {
-	identity = strings.TrimSpace(identity)
-	if identity == "" {
-		return Item{}, errors.New("identity is required")
-	}
-	if strings.TrimSpace(item.Title) == "" {
-		return Item{}, errors.New("title is required")
-	}
-
-	item.ID = strings.TrimSpace(item.ID)
-	if item.Status == "" {
-		item.Status = StatusOpen
-	} else if err := ValidateStatus(item.Status); err != nil {
+	rawComments := item.Comments
+	identity, item, err := validateUpsertInput(identity, item)
+	if err != nil {
 		return Item{}, err
 	}
-
-	if item.Queue == "" {
-		item.Queue = QueueInbox
-	} else if err := ValidateQueue(item.Queue); err != nil {
-		return Item{}, err
-	}
-	if IsTerminalStatus(item.Status) {
-		item.Queue = QueueArchive
-	}
-
-	explicitOwner := strings.TrimSpace(item.Owner)
-	item.Owner = explicitOwner
-	item.Assignee = strings.TrimSpace(item.Assignee)
 
 	s.mu.Lock()
 	s.reloadIfChangedLocked()
@@ -402,12 +332,7 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 	stored.Comments = normalizeComments(stored.Comments, identity, item.UpdatedAt)
 
 	if stored.ID == "" {
-		if stored.Owner == "" {
-			stored.Owner = identity
-		}
-		if stored.Status == StatusInProgress && stored.Assignee == "" {
-			stored.Assignee = identity
-		}
+		stored = applyInsertDefaults(identity, stored)
 		id, err := s.generateUniqueIDLocked()
 		if err != nil {
 			s.mu.Unlock()
@@ -432,23 +357,7 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 		s.mu.Unlock()
 		return Item{}, fmt.Errorf("item %q not found", stored.ID)
 	}
-	existing := s.queues[oldQueue][oldIdx]
-	if stored.Owner == "" {
-		stored.Owner = existing.Owner
-		if stored.Owner == "" {
-			stored.Owner = identity
-		}
-	}
-	if stored.Assignee == "" && stored.Status == StatusInProgress {
-		if existing.Assignee != "" {
-			stored.Assignee = existing.Assignee
-		} else {
-			stored.Assignee = identity
-		}
-	}
-	if item.Comments == nil && len(existing.Comments) > 0 {
-		stored.Comments = slices.Clone(existing.Comments)
-	}
+	stored = mergeExistingOnUpdate(identity, stored, s.queues[oldQueue][oldIdx], rawComments)
 	oldPos := oldIdx + 1
 
 	targetPos := stored.Position
@@ -476,17 +385,9 @@ func (s *JSONLStore) UpsertItem(_ context.Context, identity string, item Item) (
 
 // AddComment appends a new comment to an existing item's comment thread.
 func (s *JSONLStore) AddComment(_ context.Context, identity, itemID, text string) (Item, error) {
-	identity = strings.TrimSpace(identity)
-	if identity == "" {
-		return Item{}, errors.New("identity is required")
-	}
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return Item{}, errors.New("item id is required")
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return Item{}, errors.New("comment text is required")
+	identity, itemID, text, err := validateAddCommentInput(identity, itemID, text)
+	if err != nil {
+		return Item{}, err
 	}
 
 	s.mu.Lock()
@@ -499,14 +400,7 @@ func (s *JSONLStore) AddComment(_ context.Context, identity, itemID, text string
 	}
 
 	prevQueue := slices.Clone(s.queues[q])
-	now := s.now()
-	updated := s.queues[q][idx].Clone()
-	updated.Comments = append(updated.Comments, Comment{
-		Author:    identity,
-		Text:      text,
-		CreatedAt: now,
-	})
-	updated.UpdatedAt = now
+	updated := appendCommentToItem(s.queues[q][idx], identity, text, s.now())
 	s.queues[q][idx] = updated
 
 	if err := s.flushLocked(); err != nil {
@@ -518,6 +412,136 @@ func (s *JSONLStore) AddComment(_ context.Context, identity, itemID, text string
 	s.mu.Unlock()
 	s.notifySubscribers()
 	return res, nil
+}
+
+func validateGetQueueOptions(opts GetQueueOptions) (GetQueueOptions, bool, error) {
+	opts.Identity = strings.TrimSpace(opts.Identity)
+	if opts.Identity == "" {
+		return opts, false, errors.New("identity is required")
+	}
+	if err := ValidateQueue(opts.Queue); err != nil {
+		return opts, false, err
+	}
+	if opts.Status != "" {
+		if err := ValidateStatus(opts.Status); err != nil {
+			return opts, false, err
+		}
+	}
+	if opts.Offset < 0 {
+		return opts, false, errors.New("offset must be non-negative")
+	}
+	if opts.Limit < 0 {
+		return opts, false, errors.New("limit must be non-negative")
+	}
+	opts.Owner = strings.TrimSpace(opts.Owner)
+	opts.Assignee = strings.TrimSpace(opts.Assignee)
+	allOwners := opts.AllOwners || opts.Owner == "*"
+	return opts, allOwners, nil
+}
+
+func filterAndPaginateItems(list []Item, opts GetQueueOptions, allOwners bool) []Item {
+	matched := make([]Item, 0, len(list))
+	for _, it := range list {
+		if !matchesIdentityFilters(it, opts.Identity, opts.Owner, opts.Assignee, allOwners) {
+			continue
+		}
+		if opts.Status != "" && it.Status != opts.Status {
+			continue
+		}
+		matched = append(matched, it.Clone())
+	}
+	if opts.Offset >= len(matched) {
+		return []Item{}
+	}
+	matched = matched[opts.Offset:]
+	if opts.Limit > 0 && opts.Limit < len(matched) {
+		matched = matched[:opts.Limit]
+	}
+	return matched
+}
+
+func validateUpsertInput(identity string, item Item) (string, Item, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return "", Item{}, errors.New("identity is required")
+	}
+	if strings.TrimSpace(item.Title) == "" {
+		return "", Item{}, errors.New("title is required")
+	}
+	item.ID = strings.TrimSpace(item.ID)
+	if item.Status == "" {
+		item.Status = StatusOpen
+	} else if err := ValidateStatus(item.Status); err != nil {
+		return "", Item{}, err
+	}
+	if item.Queue == "" {
+		item.Queue = QueueInbox
+	} else if err := ValidateQueue(item.Queue); err != nil {
+		return "", Item{}, err
+	}
+	if IsTerminalStatus(item.Status) {
+		item.Queue = QueueArchive
+	}
+	item.Owner = strings.TrimSpace(item.Owner)
+	item.Assignee = strings.TrimSpace(item.Assignee)
+	return identity, item, nil
+}
+
+func applyInsertDefaults(identity string, stored Item) Item {
+	if stored.Owner == "" {
+		stored.Owner = identity
+	}
+	if stored.Status == StatusInProgress && stored.Assignee == "" {
+		stored.Assignee = identity
+	}
+	return stored
+}
+
+func mergeExistingOnUpdate(identity string, stored, existing Item, rawComments []Comment) Item {
+	if stored.Owner == "" {
+		stored.Owner = existing.Owner
+		if stored.Owner == "" {
+			stored.Owner = identity
+		}
+	}
+	if stored.Assignee == "" && stored.Status == StatusInProgress {
+		if existing.Assignee != "" {
+			stored.Assignee = existing.Assignee
+		} else {
+			stored.Assignee = identity
+		}
+	}
+	if rawComments == nil && len(existing.Comments) > 0 {
+		stored.Comments = slices.Clone(existing.Comments)
+	}
+	return stored
+}
+
+func validateAddCommentInput(identity, itemID, text string) (string, string, string, error) {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return "", "", "", errors.New("identity is required")
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return "", "", "", errors.New("item id is required")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", "", "", errors.New("comment text is required")
+	}
+	return identity, itemID, text, nil
+}
+
+func appendCommentToItem(it Item, author, text string, now time.Time) Item {
+	updated := it.Clone()
+	updated.Comments = append(updated.Comments, Comment{
+		Author:    author,
+		Text:      text,
+		CreatedAt: now,
+	})
+	updated.UpdatedAt = now
+	return updated
 }
 
 func matchesIdentityFilters(it Item, identity, ownerFilter, assigneeFilter string, allOwners bool) bool {
@@ -581,17 +605,9 @@ func (s *JSONLStore) findByIDLocked(id string) (QueueName, int, bool) {
 // renumbers all items in q to 1..len, and returns the stored Item with its assigned Position.
 func (s *JSONLStore) insertIntoQueueLocked(q QueueName, item Item, pos int) Item {
 	item.Queue = q
-	list := s.queues[q]
-	idx := len(list)
-	if pos > 0 && pos-1 < len(list) {
-		idx = pos - 1
-	}
-	list = slices.Insert(list, idx, item)
-	for i := range list {
-		list[i].Position = i + 1
-	}
-	s.queues[q] = list
-	return list[idx]
+	var placed Item
+	s.queues[q], placed = insertAndRenumberItems(s.queues[q], item, pos)
+	return placed
 }
 
 func (s *JSONLStore) removeFromQueueLocked(q QueueName, id string) {
@@ -609,14 +625,21 @@ func (s *JSONLStore) removeFromQueueLocked(q QueueName, id string) {
 
 func (s *JSONLStore) generateUniqueIDLocked() (string, error) {
 	for range 10 {
-		var b [8]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return "", fmt.Errorf("generate random id: %w", err)
+		id, err := generateRandomID()
+		if err != nil {
+			return "", err
 		}
-		id := hex.EncodeToString(b[:])
 		if _, _, exists := s.findByIDLocked(id); !exists {
 			return id, nil
 		}
 	}
 	return "", errors.New("failed to generate unique item id")
+}
+
+func generateRandomID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate random id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
