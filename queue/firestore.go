@@ -16,8 +16,6 @@ package queue
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -236,98 +234,36 @@ func (s *FirestoreStore) ListQueues(ctx context.Context, identity string) ([]Que
 
 // GetQueue returns items in a queue matching the specified filters, ordered by 1-indexed position ascending.
 func (s *FirestoreStore) GetQueue(ctx context.Context, opts GetQueueOptions) ([]Item, error) {
-	opts.Identity = strings.TrimSpace(opts.Identity)
-	if opts.Identity == "" {
-		return nil, errors.New("identity is required")
-	}
-	if err := ValidateQueue(opts.Queue); err != nil {
+	opts, allOwners, err := validateGetQueueOptions(opts)
+	if err != nil {
 		return nil, err
 	}
-	if opts.Status != "" {
-		if err := ValidateStatus(opts.Status); err != nil {
-			return nil, err
-		}
-	}
-	if opts.Offset < 0 {
-		return nil, errors.New("offset must be non-negative")
-	}
-	if opts.Limit < 0 {
-		return nil, errors.New("limit must be non-negative")
-	}
-
-	ownerFilter := strings.TrimSpace(opts.Owner)
-	assigneeFilter := strings.TrimSpace(opts.Assignee)
-	allOwners := opts.AllOwners || ownerFilter == "*"
 
 	items, err := s.queryQueueItems(ctx, nil, opts.Queue)
 	if err != nil {
 		return nil, err
 	}
 
-	matched := make([]Item, 0, len(items))
-	for _, it := range items {
-		if !matchesIdentityFilters(it, opts.Identity, ownerFilter, assigneeFilter, allOwners) {
-			continue
-		}
-		if opts.Status != "" && it.Status != opts.Status {
-			continue
-		}
-		matched = append(matched, it)
-	}
-
-	if opts.Offset >= len(matched) {
-		return []Item{}, nil
-	}
-	matched = matched[opts.Offset:]
-	if opts.Limit > 0 && opts.Limit < len(matched) {
-		matched = matched[:opts.Limit]
-	}
-	return matched, nil
+	return filterAndPaginateItems(items, opts, allOwners), nil
 }
 
 // UpsertItem creates a new item if item.ID is empty, or replaces an existing item if item.ID is set.
 func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item Item) (Item, error) {
-	identity = strings.TrimSpace(identity)
-	if identity == "" {
-		return Item{}, errors.New("identity is required")
-	}
-	if strings.TrimSpace(item.Title) == "" {
-		return Item{}, errors.New("title is required")
-	}
-
-	item.ID = strings.TrimSpace(item.ID)
-	if item.Status == "" {
-		item.Status = StatusOpen
-	} else if err := ValidateStatus(item.Status); err != nil {
+	rawComments := item.Comments
+	identity, item, err := validateUpsertInput(identity, item)
+	if err != nil {
 		return Item{}, err
 	}
-
-	if item.Queue == "" {
-		item.Queue = QueueInbox
-	} else if err := ValidateQueue(item.Queue); err != nil {
-		return Item{}, err
-	}
-	if IsTerminalStatus(item.Status) {
-		item.Queue = QueueArchive
-	}
-
-	item.Owner = strings.TrimSpace(item.Owner)
-	item.Assignee = strings.TrimSpace(item.Assignee)
 	item.UpdatedAt = s.now()
 
 	var result Item
-	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+	err = s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
 		stored := item.Clone()
 		stored.Comments = normalizeComments(stored.Comments, identity, item.UpdatedAt)
 
 		if stored.ID == "" {
-			if stored.Owner == "" {
-				stored.Owner = identity
-			}
-			if stored.Status == StatusInProgress && stored.Assignee == "" {
-				stored.Assignee = identity
-			}
-			id, err := generateFirestoreID()
+			stored = applyInsertDefaults(identity, stored)
+			id, err := generateRandomID()
 			if err != nil {
 				return err
 			}
@@ -359,22 +295,7 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 			return fmt.Errorf("decode existing item %q: %w", stored.ID, err)
 		}
 		existing := existingDoc.toItem()
-		if stored.Owner == "" {
-			stored.Owner = existing.Owner
-			if stored.Owner == "" {
-				stored.Owner = identity
-			}
-		}
-		if stored.Assignee == "" && stored.Status == StatusInProgress {
-			if existing.Assignee != "" {
-				stored.Assignee = existing.Assignee
-			} else {
-				stored.Assignee = identity
-			}
-		}
-		if item.Comments == nil && len(existing.Comments) > 0 {
-			stored.Comments = slices.Clone(existing.Comments)
-		}
+		stored = mergeExistingOnUpdate(identity, stored, existing, rawComments)
 		oldQueue := existing.Queue
 
 		oldItems, err := s.queryQueueItems(ctx, tx, oldQueue)
@@ -436,21 +357,13 @@ func (s *FirestoreStore) UpsertItem(ctx context.Context, identity string, item I
 
 // AddComment appends a new comment to an existing item's comment thread in Firestore.
 func (s *FirestoreStore) AddComment(ctx context.Context, identity, itemID, text string) (Item, error) {
-	identity = strings.TrimSpace(identity)
-	if identity == "" {
-		return Item{}, errors.New("identity is required")
-	}
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return Item{}, errors.New("item id is required")
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return Item{}, errors.New("comment text is required")
+	identity, itemID, text, err := validateAddCommentInput(identity, itemID, text)
+	if err != nil {
+		return Item{}, err
 	}
 
 	var result Item
-	err := s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
+	err = s.client.RunTransaction(ctx, func(_ context.Context, tx *firestore.Transaction) error {
 		docRef := s.col().Doc(itemID)
 		docSnap, err := tx.Get(docRef)
 		if err != nil {
@@ -466,14 +379,7 @@ func (s *FirestoreStore) AddComment(ctx context.Context, identity, itemID, text 
 		if existingDoc.ID == "" {
 			existingDoc.ID = docRef.ID
 		}
-		updated := existingDoc.toItem()
-		now := s.now()
-		updated.Comments = append(updated.Comments, Comment{
-			Author:    identity,
-			Text:      text,
-			CreatedAt: now,
-		})
-		updated.UpdatedAt = now
+		updated := appendCommentToItem(existingDoc.toItem(), identity, text, s.now())
 		if err := tx.Set(docRef, toFirestoreDoc(updated)); err != nil {
 			return err
 		}
@@ -547,12 +453,4 @@ func insertAndRenumberItems(list []Item, item Item, pos int) ([]Item, Item) {
 		list[i].Position = i + 1
 	}
 	return list, list[idx]
-}
-
-func generateFirestoreID() (string, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("generate random id: %w", err)
-	}
-	return hex.EncodeToString(b[:]), nil
 }
