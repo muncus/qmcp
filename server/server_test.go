@@ -225,15 +225,18 @@ func TestMCPServer_EndToEnd(t *testing.T) {
 	if ids, ok := boardSurf.Data().Get("/identities"); !ok || ids == nil {
 		t.Errorf("expected /identities in A2UI surface data model, got %+v (ok=%v)", ids, ok)
 	}
-	if editLbl, ok := boardSurf.Component("lane-0-item-0-edit-text-label"); !ok || editLbl.Text == nil {
-		t.Errorf("expected edit button pencil icon label in modal, got %+v", editLbl)
-	} else if gotPencil, _ := boardSurf.Data().ResolveString(editLbl.Text.Text, ""); gotPencil != "✎" {
-		t.Errorf("expected pencil icon '✎' on edit button, got %q", gotPencil)
+	if modalTabs, ok := boardSurf.Component("lane-0-item-0-modal-tabs"); !ok || modalTabs.Tabs == nil || len(modalTabs.Tabs.Tabs) != 2 {
+		t.Errorf("expected A2UI Tabs component with View and Edit tabs in modal, got %+v", modalTabs)
+	} else if gotEditTab, _ := boardSurf.Data().ResolveString(modalTabs.Tabs.Tabs[1].Title, ""); !strings.Contains(gotEditTab, "✎") {
+		t.Errorf("expected pencil icon '✎' on Edit tab title, got %q", gotEditTab)
+	}
+	if doneIcon, ok := boardSurf.Component("lane-0-item-0-done-icon"); !ok || doneIcon.Icon == nil || doneIcon.Icon.Name.Name == nil || *doneIcon.Icon.Name.Name != a2ui.IconFolder {
+		t.Errorf("expected done-icon A2UI Icon component, got %+v", doneIcon)
 	}
 	if doneLbl, ok := boardSurf.Component("lane-0-item-0-done-label"); !ok || doneLbl.Text == nil {
 		t.Errorf("expected done-label component, got %+v", doneLbl)
 	} else if gotDone, _ := boardSurf.Data().ResolveString(doneLbl.Text.Text, ""); !strings.Contains(gotDone, "Archive") {
-		t.Errorf("expected Archive button label with icon, got %q", gotDone)
+		t.Errorf("expected Archive button label, got %q", gotDone)
 	}
 	if actionsRow, ok := boardSurf.Component("lane-0-item-0-actions"); !ok || actionsRow.Row == nil {
 		t.Errorf("expected actions row on card, got %+v", actionsRow)

@@ -146,109 +146,15 @@ func handleAPITool(w http.ResponseWriter, r *http.Request, store queue.Store) {
 		return
 	}
 
-	ctx := r.Context()
-	switch req.Name {
-	case "list_queues":
-		var in ListQueuesInput
-		if err := json.Unmarshal(req.Arguments, &in); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		queues, err := store.ListQueues(ctx, in.Identity)
-		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		itemsByQueue, err := loadItemsByQueue(ctx, store, in.Identity, in.AllOwners, queues)
-		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		out := ListQueuesOutput{Queues: queues}
-		msgs := BuildQueuesSummarySurface(in.Identity, queues, itemsByQueue)
-		_ = json.NewEncoder(w).Encode(apiToolResponse{
-			StructuredContent: out,
-			A2UI:              msgs,
-		})
-
-	case "get_queue":
-		var in GetQueueInput
-		if err := json.Unmarshal(req.Arguments, &in); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		items, err := store.GetQueue(ctx, queue.GetQueueOptions{
-			Identity:  in.Identity,
-			Queue:     in.Queue,
-			Owner:     in.Owner,
-			Assignee:  in.Assignee,
-			AllOwners: in.AllOwners,
-			Status:    in.Status,
-			Limit:     in.Limit,
-			Offset:    in.Offset,
-		})
-		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		out := GetQueueOutput{Queue: in.Queue, Items: items}
-		msgs := BuildQueueSurface(in.Identity, in.Queue, items)
-		_ = json.NewEncoder(w).Encode(apiToolResponse{
-			StructuredContent: out,
-			A2UI:              msgs,
-		})
-
-	case "upsert_item":
-		var in UpsertItemInput
-		if err := json.Unmarshal(req.Arguments, &in); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		item, err := store.UpsertItem(ctx, in.Identity, queue.Item{
-			ID:       in.ID,
-			Title:    in.Title,
-			Queue:    in.Queue,
-			Status:   in.Status,
-			Position: in.Position,
-			Text:     in.Text,
-			Comments: in.Comments,
-			Data:     in.Data,
-			Links:    in.Links,
-			Owner:    in.Owner,
-			Assignee: in.Assignee,
-		})
-		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		out := UpsertItemOutput{Item: item}
-		msgs := BuildItemSurface(in.Identity, item)
-		_ = json.NewEncoder(w).Encode(apiToolResponse{
-			StructuredContent: out,
-			A2UI:              msgs,
-		})
-
-	case "add_comment":
-		var in AddCommentInput
-		if err := json.Unmarshal(req.Arguments, &in); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		item, err := store.AddComment(ctx, in.Identity, in.ID, in.Text)
-		if err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
-			return
-		}
-		out := AddCommentOutput{Item: item}
-		msgs := BuildItemSurface(in.Identity, item)
-		_ = json.NewEncoder(w).Encode(apiToolResponse{
-			StructuredContent: out,
-			A2UI:              msgs,
-		})
-
-	default:
-		writeAPIError(w, http.StatusBadRequest, fmt.Errorf("unknown tool %q", req.Name))
+	out, msgs, err := dispatchTool(r.Context(), store, req.Name, req.Arguments)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
 	}
+	_ = json.NewEncoder(w).Encode(apiToolResponse{
+		StructuredContent: out,
+		A2UI:              msgs,
+	})
 }
 
 func writeAPIError(w http.ResponseWriter, status int, err error) {
